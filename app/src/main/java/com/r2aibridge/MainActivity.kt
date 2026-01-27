@@ -96,6 +96,15 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
+        // 🔥 智能加载 Radare2 库（热插拔支持）
+        try {
+            R2Core.loadLibraries(this)
+            Log.i("MainActivity", "✅ R2 libraries loaded via smart loader")
+        } catch (e: Exception) {
+            Log.e("MainActivity", "❌ Failed to load R2 libraries", e)
+            Toast.makeText(this, "R2库加载失败：${e.message}", Toast.LENGTH_LONG).show()
+        }
+        
         // 启用边到边显示和透明状态栏
         WindowCompat.setDecorFitsSystemWindows(window, false)
         

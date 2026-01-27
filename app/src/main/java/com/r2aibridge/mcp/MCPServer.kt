@@ -42,6 +42,52 @@ object MCPServer {
         println(logMsg)
     }
 
+    /**
+     * 清洗和截断 Radare2 的输出，防止 AI 崩溃
+     * @param raw 原始输出
+     * @param maxLines 最大行数
+     * @param maxChars 最大字符数
+     * @param filterGarbage 是否过滤垃圾段 (如 .eh_frame)
+     * @return 清洗后的输出
+     */
+    private fun sanitizeOutput(
+        raw: String, 
+        maxLines: Int = 500, 
+        maxChars: Int = 16000,
+        filterGarbage: Boolean = false
+    ): String {
+        if (raw.isBlank()) return "(Empty Output)"
+
+        var output = raw
+        
+        // 1. 过滤垃圾段 (如 .eh_frame, .text 中的乱码)
+        if (filterGarbage) {
+            output = output.lineSequence()
+                .filter { line ->
+                    !line.contains(".eh_frame") && 
+                    !line.contains(".gcc_except_table") &&
+                    !line.contains("libunwind")
+                }
+                .joinToString("\n")
+        }
+        
+        // 2. 字符数截断
+        if (output.length > maxChars) {
+            logInfo("输出超过 $maxChars 字符，已截断")
+            return output.take(maxChars) + "\n\n[⛔ SYSTEM: 输出超过 $maxChars 字符，已强制截断。请缩小分析范围。]"
+        }
+        
+        // 3. 行数截断
+        val lines = output.lines()
+        if (lines.size > maxLines) {
+            logInfo("输出超过 $maxLines 行 (共 ${lines.size} 行)，已截断")
+            return lines.take(maxLines).joinToString("\n") + 
+                   "\n\n[⛔ SYSTEM: 输出超过 $maxLines 行 (共 ${lines.size} 行)，已截断。请使用过滤参数缩小范围。]"
+        }
+
+        return output
+    }
+
     fun configure(app: Application, onLogEvent: (String) -> Unit) {
         app.install(ContentNegotiation) {
             json(json)
@@ -300,28 +346,32 @@ object MCPServer {
             ),
             createToolSchema(
                 "r2_list_functions",
-                "📋 [函数分析] 列出二进制文件中的所有已识别函数。使用 'afl' 命令，返回函数地址、大小和名称。",
+                "📋 [函数分析] 列出二进制文件中的已识别函数。使用 'afl' 命令。可通过 filter 过滤函数名，防止输出过多。",
                 mapOf(
-                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "filter" to mapOf("type" to "string", "description" to "可选:函数名过滤器（如 'sym.Java' 只显示 Java 相关函数）", "default" to ""),
+                    "limit" to mapOf("type" to "integer", "description" to "最大返回数量（默认 500）", "default" to 500)
                 ),
                 listOf("session_id")
             ),
             createToolSchema(
                 "r2_list_strings",
-                "📝 [逆向第一步] 列出二进制文件中的所有字符串。用于快速定位关键逻辑（如 \"Password\", \"Error\", \"http://\"）。默认使用 'iz'（数据段字符串），可选 'izzz'（全盘搜索）。",
+                "📝 [逆向第一步] 列出二进制文件中的字符串。用于快速定位关键逻辑。默认使用 'iz'（数据段）并自动过滤 .eh_frame/.text 等垃圾段。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
-                    "mode" to mapOf("type" to "string", "description" to "搜索模式: 'data'（默认，iz，仅数据段）或 'all'（izzz，全盘搜索）", "default" to "data")
+                    "mode" to mapOf("type" to "string", "description" to "搜索模式: 'data'（默认，iz，仅数据段）或 'all'（izz，全盘搜索）", "default" to "data"),
+                    "min_length" to mapOf("type" to "integer", "description" to "最小字符串长度（默认 5，过滤短字符串）", "default" to 5)
                 ),
                 listOf("session_id")
             ),
             createToolSchema(
                 "r2_get_xrefs",
-                "🔗 [逻辑追踪必备] 获取指定地址/函数的交叉引用。查找 \"谁调用了它\"（axt）或 \"它调用了谁\"（axf）。用于分析控制流和函数调用关系。",
+                "🔗 [逻辑追踪必备] 获取指定地址/函数的交叉引用。查找 \"谁调用了它\"（axt）或 \"它调用了谁\"（axf）。默认限制返回 50 个引用，防止通用函数（如 malloc）的引用风暴。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
                     "address" to mapOf("type" to "string", "description" to "目标地址或函数名（如: 0x401000 或 main）"),
-                    "direction" to mapOf("type" to "string", "description" to "引用方向: 'to'（默认，axt，谁调用了它）或 'from'（axf，它调用了谁）", "default" to "to")
+                    "direction" to mapOf("type" to "string", "description" to "引用方向: 'to'（默认，axt，谁调用了它）或 'from'（axf，它调用了谁）", "default" to "to"),
+                    "limit" to mapOf("type" to "integer", "description" to "最大返回数量（默认 50）", "default" to 50)
                 ),
                 listOf("session_id", "address")
             ),
@@ -663,7 +713,10 @@ object MCPServer {
         logInfo("执行命令: $command (Session: ${sessionId.take(16)})")
         
         // 直接使用会话的 core 指针执行命令
-        val result = R2Core.executeCommand(session.corePtr, command)
+        val rawResult = R2Core.executeCommand(session.corePtr, command)
+        
+        // 使用全局清洗函数防止输出爆炸
+        val result = sanitizeOutput(rawResult, maxLines = 1000, maxChars = 20000)
         
         if (result.length > 200) {
             logInfo("命令返回: ${result.length} bytes")
@@ -675,13 +728,22 @@ object MCPServer {
     private suspend fun executeListFunctions(args: JsonObject): JsonElement {
         val sessionId = args["session_id"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing session_id")
+        
+        val filter = args["filter"]?.jsonPrimitive?.content ?: ""  // 新增过滤参数
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 500   // 默认限制500个
 
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
-        logInfo("列出函数 (Session: ${sessionId.take(16)})")
+        // 使用 afl~keyword 语法进行过滤
+        val command = if (filter.isBlank()) "afl" else "afl~$filter"
         
-        val result = R2Core.executeCommand(session.corePtr, "afl")
+        logInfo("列出函数 (过滤: '$filter', 限制: $limit, Session: ${sessionId.take(16)})")
+        
+        val rawResult = R2Core.executeCommand(session.corePtr, command)
+        
+        // 使用全局清洗函数限制输出大小
+        val result = sanitizeOutput(rawResult, maxLines = limit, maxChars = 16000)
         
         return createToolResult(true, output = result)
     }
@@ -695,9 +757,26 @@ object MCPServer {
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
-        logInfo("反编译函数: $address (Session: ${sessionId.take(16)})")
+        // 1. 先检查函数大小 (afi 命令获取函数信息)
+        val info = R2Core.executeCommand(session.corePtr, "afi @ $address")
+        val size = info.lines()
+            .find { it.trim().startsWith("size:") }
+            ?.substringAfter(":")
+            ?.trim()
+            ?.toLongOrNull() ?: 0
+                   
+        if (size > 10000) { // 如果二进制大小超过 10KB，反编译代码会巨大
+            logInfo("函数过大 ($address, size: $size bytes)，跳过反编译")
+            return createToolResult(true, output = "⚠️ 函数过大 (Size: $size bytes)，反编译可能导致超时或不准确。\n\n建议先使用 r2_disassemble 查看局部汇编，或使用 r2_run_command 执行 'pdf @ $address' 查看函数结构。")
+        }
+
+        logInfo("反编译函数: $address (size: $size bytes, Session: ${sessionId.take(16)})")
         
-        val result = R2Core.executeCommand(session.corePtr, "pdc @ $address")
+        // 2. 安全才反编译
+        val rawCode = R2Core.executeCommand(session.corePtr, "pdc @ $address")
+        
+        // 3. 使用全局清洗函数限制输出
+        val result = sanitizeOutput(rawCode, maxLines = 500, maxChars = 15000)
         
         return createToolResult(true, output = result)
     }
@@ -763,20 +842,46 @@ object MCPServer {
             ?: return createToolResult(false, error = "Missing session_id")
 
         val mode = args["mode"]?.jsonPrimitive?.content ?: "data"
+        val minLength = args["min_length"]?.jsonPrimitive?.intOrNull ?: 5 // 默认忽略小于5的
         
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         val command = when (mode) {
-            "all" -> "izzz"  // 全盘搜索（慢但全面）
-            else -> "iz"     // 数据段字符串（快速）
+            "all" -> "izz"   // 全盘搜索（慢但全面）
+            else -> "iz"      // 数据段字符串（快速）
         }
         
-        logInfo("列出字符串 (模式: $mode, Session: ${sessionId.take(16)})")
+        logInfo("列出字符串 (模式: $mode, 最小长度: $minLength, Session: ${sessionId.take(16)})")
         
-        val result = R2Core.executeCommand(session.corePtr, command)
+        val rawOutput = R2Core.executeCommand(session.corePtr, command)
         
-        return createToolResult(true, output = result)
+        // 智能清洗：过滤垃圾段和短字符串
+        val cleanOutput = rawOutput.lineSequence()
+            .filter { line ->
+                // 过滤掉垃圾段 (这是最重要的！)
+                !line.contains(".eh_frame") && 
+                !line.contains(".gcc_except_table") &&
+                !line.contains(".text") && // 代码段里的通常是假字符串
+                !line.contains("libunwind") // 过滤库报错信息
+            }
+            .filter { line ->
+                // 提取字符串内容部分进行长度检查
+                // r2 iz 格式: 000 0x... section type string
+                // 简单做法：看行尾长度
+                line.trim().length > 20 || // 保留长行 (可能是元数据)
+                line.split("ascii", "utf8", "utf16", "utf32").lastOrNull()?.trim()?.length ?: 0 >= minLength
+            }
+            .joinToString("\n")
+
+        val finalOutput = if (cleanOutput.isBlank()) {
+            "No meaningful strings found (filters active: min_len=$minLength, exclude=.text/.eh_frame)"
+        } else {
+            // 使用全局清洗函数进行截断保护
+            sanitizeOutput(cleanOutput, maxLines = 500, maxChars = 16000)
+        }
+        
+        return createToolResult(true, output = finalOutput)
     }
 
     private suspend fun executeGetXrefs(args: JsonObject): JsonElement {
@@ -787,6 +892,7 @@ object MCPServer {
             ?: return createToolResult(false, error = "Missing address")
         
         val direction = args["direction"]?.jsonPrimitive?.content ?: "to"
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50  // 默认限制 50 个引用
 
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
@@ -796,9 +902,12 @@ object MCPServer {
             else -> "axt @ $address"     // 谁调用了它
         }
         
-        logInfo("获取交叉引用 (地址: $address, 方向: $direction, Session: ${sessionId.take(16)})")
+        logInfo("获取交叉引用 (地址: $address, 方向: $direction, 限制: $limit, Session: ${sessionId.take(16)})")
         
-        val result = R2Core.executeCommand(session.corePtr, command)
+        val rawResult = R2Core.executeCommand(session.corePtr, command)
+        
+        // 限制输出数量，防止 malloc/memcpy 等通用函数的引用风暴
+        val result = sanitizeOutput(rawResult, maxLines = limit, maxChars = 8000)
         
         return createToolResult(true, output = result)
     }

@@ -1,55 +1,108 @@
 package com.r2aibridge
 
+import android.content.Context
 import android.util.Log
+import java.io.File
 
 /**
  * JNI wrapper for Radare2 core functionality
  */
 object R2Core {
     private const val TAG = "R2Core"
+    private var isInitialized = false
     
-    init {
+    /**
+     * 智能加载器：自动扫描并加载所有 radare2 库
+     * 无需手动维护列表，支持任意增删 .so 文件
+     * 
+     * @param context Application context for getting native library directory
+     */
+    fun loadLibraries(context: Context) {
+        if (isInitialized) {
+            Log.i(TAG, "Libraries already loaded, skipping...")
+            return
+        }
+        
         try {
-            // 按依赖顺序加载 radare2 库
-            val libs = arrayOf(
-                "r_util",      // 基础工具库（最底层）
-                "r_socket",    // Socket 库
-                "r_cons",      // Console 库
-                "r_config",    // 配置库
-                "r_io",        // IO 库
-                "r_muta",      // Crypto 库
-                "r_flag",      // Flag 库
-                "r_reg",       // Register 库
-                "r_syscall",   // Syscall 库
-                "r_search",    // Search 库
-                "r_magic",     // Magic 库
-                "r_bp",        // Breakpoint 库
-                "r_esil",      // ESIL 库
-                "r_arch",      // Architecture 库
-                "r_asm",       // Assembler 库
-                "r_anal",      // Analysis 库
-                "r_bin",       // Binary 库
-                "r_egg",       // Egg 库
-                "r_lang",      // Language 库
-                "r_fs",        // Filesystem 库
-                "r_debug",     // Debug 库
-                "r_core"       // Core 库（最顶层）
-            )
-            
-            for (lib in libs) {
-                try {
-                    System.loadLibrary(lib)
-                    Log.d(TAG, "Loaded: lib$lib.so")
-                } catch (e: UnsatisfiedLinkError) {
-                    Log.w(TAG, "Failed to load lib$lib.so: ${e.message}")
-                }
+            // 1. 获取 App 原生库安装目录
+            val libDir = File(context.applicationInfo.nativeLibraryDir)
+            if (!libDir.exists() || !libDir.isDirectory) {
+                Log.e(TAG, "Native lib dir not found: ${libDir.absolutePath}")
+                return
             }
             
-            // 加载我们的 JNI 桥接库
-            System.loadLibrary("r2aibridge")
-            Log.i(TAG, "R2 libraries loaded successfully")
+            Log.i(TAG, "Scanning native libs in: ${libDir.absolutePath}")
+            
+            // 2. 扫描所有以 libr 开头的 .so 文件
+            // 过滤逻辑（双保险）：
+            // 1. 必须是 .so 文件
+            // 2. 必须以 "libr" 开头（涵盖 libr_xxx 和可能的新格式）
+            // 3. ⛔ 显式排除桥接库 r2aibridge（必须最后加载）
+            // 4. ⛔ 显式排除 C++ 运行时（虽然 libc 开头本来就不匹配，但写上更放心）
+            val r2Libs = libDir.listFiles { file ->
+                val name = file.name
+                name.endsWith(".so") && 
+                name.startsWith("libr") && 
+                !name.contains("r2aibridge") && 
+                !name.contains("c++_shared")
+            }?.toMutableList() ?: mutableListOf()
+            
+            Log.i(TAG, "Found ${r2Libs.size} radare2 libraries. Starting smart load...")
+            
+            // 3. 自旋加载循环（解决依赖顺序问题）
+            var loadedCount = 0
+            var pass = 0
+            val maxPasses = r2Libs.size * 2 // 防止死循环的安全阈值
+            
+            while (r2Libs.isNotEmpty() && pass < maxPasses) {
+                val iterator = r2Libs.iterator()
+                var progressMadeInThisPass = false
+                
+                while (iterator.hasNext()) {
+                    val file = iterator.next()
+                    // 将 "libr_core.so" 转换为 "r_core"（System.loadLibrary 需要的格式）
+                    val libName = file.name.removePrefix("lib").removeSuffix(".so")
+                    
+                    try {
+                        System.loadLibrary(libName)
+                        // 如果这一行没报错，说明加载成功
+                        iterator.remove() // 从待办列表中移除
+                        progressMadeInThisPass = true
+                        loadedCount++
+                        Log.v(TAG, "✓ Loaded: $libName (pass $pass)")
+                    } catch (e: UnsatisfiedLinkError) {
+                        // 依赖未满足，暂时跳过，留给下一轮
+                        // Log.v(TAG, "⊙ Skipped: $libName (deps not ready)")
+                    } catch (e: Throwable) {
+                        Log.e(TAG, "✗ Fatal error loading $libName", e)
+                        iterator.remove() // 致命错误，移除避免死循环
+                    }
+                }
+                
+                if (!progressMadeInThisPass && r2Libs.isNotEmpty()) {
+                    // 如果一整轮下来一个都没加载成功，说明发生了死锁或缺库
+                    Log.e(TAG, "❌ Dependency deadlock! Remaining libs cannot be loaded:")
+                    r2Libs.forEach { Log.e(TAG, "   - ${it.name}") }
+                    break
+                }
+                
+                pass++
+            }
+            
+            // 4. 最后加载我们的 JNI 桥接库
+            // 这时候所有 r2 依赖都应该准备就绪了
+            try {
+                System.loadLibrary("r2aibridge")
+                Log.i(TAG, "✅ Success! Loaded $loadedCount r2 libs + bridge in $pass passes")
+                isInitialized = true
+            } catch (e: UnsatisfiedLinkError) {
+                Log.e(TAG, "❌ Failed to load libr2aibridge.so. Missing dependencies:")
+                Log.e(TAG, e.message ?: "Unknown error")
+                throw e
+            }
+            
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to load R2 libraries", e)
+            Log.e(TAG, "Smart load failed", e)
             throw e
         }
     }
