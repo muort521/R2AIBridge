@@ -130,12 +130,7 @@ Java_com_r2aibridge_R2Core_openFile(
     
     env->ReleaseStringUTFChars(filePath, path);
 
-    if (success) {
-        LOGI("File opened successfully, running analysis...");
-        // 自动分析
-        r_core_cmd0(core, "aaa");
-        LOGI("Analysis complete");
-    } else {
+    if (!success) {
         LOGE("All methods failed to open file: %s", path);
         // 获取错误信息
         char* error = r_core_cmd_str(core, "o");
@@ -143,6 +138,8 @@ Java_com_r2aibridge_R2Core_openFile(
             LOGE("Current opened files: %s", error);
             free(error);
         }
+    } else {
+        LOGI("File opened successfully (no auto-analysis, controlled by Kotlin layer)");
     }
 
     return success ? JNI_TRUE : JNI_FALSE;

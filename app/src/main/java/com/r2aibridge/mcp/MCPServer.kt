@@ -280,16 +280,17 @@ object MCPServer {
         val tools = listOf(
             createToolSchema(
                 "r2_open_file",
-                "打开二进制文件进行分析。如果不提供 session_id 则自动创建新会话。",
+                "🚪 [会话管理] 打开二进制文件。默认执行基础分析 (aa) 以快速识别函数。注意：对于大型文件 (>10MB)，强烈建议将 auto_analyze 设为 false 以免超时。如需深度分析，可后续调用 r2_analyze_file 或使用 r2_run_command 执行 'aaa'。",
                 mapOf(
                     "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径"),
-                    "session_id" to mapOf("type" to "string", "description" to "可选：使用现有会话 ID，如果不提供则自动创建")
+                    "session_id" to mapOf("type" to "string", "description" to "可选:使用现有会话 ID,如果不提供则自动创建"),
+                    "auto_analyze" to mapOf("type" to "boolean", "description" to "是否自动执行基础分析 (aa 命令)。默认为 true。对于大文件 (>10MB) 请设为 false。", "default" to true)
                 ),
                 listOf("file_path")
             ),
             createToolSchema(
                 "r2_analyze_file",
-                "加载并深度分析二进制文件。执行 'aaa' 命令进行完整分析（识别函数、字符串、引用等），返回文件信息和会话ID。",
+                "⚡ [深度分析] 一次性执行深度分析 (aaa) 并自动释放资源。注意：aaa 会耗时较长，仅用于需要完整分析的场景。对于大文件，建议使用 r2_open_file(auto_analyze=false) + r2_run_command 手动分析。",
                 mapOf(
                     "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径")
                 ),
@@ -297,7 +298,7 @@ object MCPServer {
             ),
             createToolSchema(
                 "r2_run_command",
-                "在指定会话中执行任意 Radare2 命令。支持所有 r2 命令，如：pdf（反汇编函数）、afl（列出函数）、iz（列出字符串）、px（十六进制查看）等。",
+                "⚙️ [通用命令] 在指定会话中执行任意 Radare2 命令。支持所有 r2 命令，如：pdf（反汇编函数）、afl（列出函数）、iz（列出字符串）、px（十六进制查看）等。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
                     "command" to mapOf("type" to "string", "description" to "Radare2 命令，例如：'pdf @ main', 'afl', 'iz', 'px 100 @ 0x401000'")
@@ -306,15 +307,43 @@ object MCPServer {
             ),
             createToolSchema(
                 "r2_list_functions",
-                "列出二进制文件中的所有已识别函数。使用 'afl' 命令，返回函数地址、大小和名称。",
+                "📋 [函数分析] 列出二进制文件中的所有已识别函数。使用 'afl' 命令，返回函数地址、大小和名称。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID")
                 ),
                 listOf("session_id")
             ),
             createToolSchema(
+                "r2_list_strings",
+                "📝 [逆向第一步] 列出二进制文件中的所有字符串。用于快速定位关键逻辑（如 \"Password\", \"Error\", \"http://\"）。默认使用 'iz'（数据段字符串），可选 'izzz'（全盘搜索）。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "mode" to mapOf("type" to "string", "description" to "搜索模式: 'data'（默认，iz，仅数据段）或 'all'（izzz，全盘搜索）", "default" to "data")
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
+                "r2_get_xrefs",
+                "🔗 [逻辑追踪必备] 获取指定地址/函数的交叉引用。查找 \"谁调用了它\"（axt）或 \"它调用了谁\"（axf）。用于分析控制流和函数调用关系。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "目标地址或函数名（如: 0x401000 或 main）"),
+                    "direction" to mapOf("type" to "string", "description" to "引用方向: 'to'（默认，axt，谁调用了它）或 'from'（axf，它调用了谁）", "default" to "to")
+                ),
+                listOf("session_id", "address")
+            ),
+            createToolSchema(
+                "r2_get_info",
+                "ℹ️ [环境感知] 获取二进制文件的详细信息。包括架构（32/64位）、平台（ARM/x86）、文件类型（ELF/DEX）等。帮助 AI 决定分析策略。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "detailed" to mapOf("type" to "boolean", "description" to "是否显示详细信息（iI），默认 false（i）", "default" to false)
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
                 "r2_decompile_function",
-                "反编译指定地址的函数为伪代码。使用 'pdc' 命令，将汇编代码转换为类 C 语言的可读代码。",
+                "🔍 [代码分析] 反编译指定地址的函数为伪代码。使用 'pdc' 命令，将汇编代码转换为类 C 语言的可读代码。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
                     "address" to mapOf("type" to "string", "description" to "函数地址（十六进制格式，如：0x401000 或 main）")
@@ -323,7 +352,7 @@ object MCPServer {
             ),
             createToolSchema(
                 "r2_disassemble",
-                "反汇编指定地址的代码。使用 'pd' 命令显示汇编指令。",
+                "📜 [汇编分析] 反汇编指定地址的代码。使用 'pd' 命令显示汇编指令。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
                     "address" to mapOf("type" to "string", "description" to "起始地址（十六进制格式，如：0x401000）"),
@@ -332,12 +361,12 @@ object MCPServer {
                 listOf("session_id", "address")
             ),
             createToolSchema(                "r2_test",
-                "测试 Radare2 库是否正常工作。返回版本信息和基本功能测试结果。",
+                "🧪 [诊断工具] 测试 Radare2 库是否正常工作。返回版本信息和基本功能测试结果。",
                 mapOf(),
                 listOf()
             ),
             createToolSchema(                "r2_close_session",
-                "关闭指定的 Radare2 会话，释放资源。",
+                "🔒 [会话管理] 关闭指定的 Radare2 会话，释放资源。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "要关闭的会话 ID")
                 ),
@@ -403,6 +432,9 @@ object MCPServer {
                 "r2_analyze_file" -> executeAnalyzeFile(arguments)
                 "r2_run_command" -> executeCommand(arguments)
                 "r2_list_functions" -> executeListFunctions(arguments)
+                "r2_list_strings" -> executeListStrings(arguments)
+                "r2_get_xrefs" -> executeGetXrefs(arguments)
+                "r2_get_info" -> executeGetInfo(arguments)
                 "r2_decompile_function" -> executeDecompileFunction(arguments)
                 "r2_disassemble" -> executeDisassemble(arguments)
                 "r2_test" -> executeTestR2(arguments)
@@ -478,6 +510,9 @@ object MCPServer {
         val filePath = args["file_path"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing file_path")
         
+        // 读取 auto_analyze 参数，默认 true
+        val autoAnalyze = args["auto_analyze"]?.jsonPrimitive?.booleanOrNull ?: true
+        
         // 验证文件是否存在
         val file = java.io.File(filePath)
         if (!file.exists()) {
@@ -516,9 +551,21 @@ object MCPServer {
             logInfo("使用现有会话: $sessionId (文件: $filePath)")
         }
 
-        val result = R2Core.executeCommand(session.corePtr, "i")
+        // 执行分析（如果启用）
+        val analysisResult = if (autoAnalyze) {
+            logInfo("执行基础分析 (aa)...")
+            val startTime = System.currentTimeMillis()
+            val output = R2Core.executeCommand(session.corePtr, "aa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("分析完成，耗时 ${duration}ms")
+            "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
+        } else {
+            "\n[跳过自动分析]"
+        }
+
+        val info = R2Core.executeCommand(session.corePtr, "i")
         
-        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}\n\n$result")
+        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
     }
 
     private suspend fun executeAnalyzeFile(args: JsonObject): JsonElement {
@@ -700,5 +747,68 @@ object MCPServer {
             logError("R2 测试失败", e.message)
             createToolResult(false, error = "R2 test failed: ${e.message}\n${e.stackTraceToString()}")
         }
+    }
+
+    private suspend fun executeListStrings(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val mode = args["mode"]?.jsonPrimitive?.content ?: "data"
+        
+        val session = r2Sessions[sessionId]
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = when (mode) {
+            "all" -> "izzz"  // 全盘搜索（慢但全面）
+            else -> "iz"     // 数据段字符串（快速）
+        }
+        
+        logInfo("列出字符串 (模式: $mode, Session: ${sessionId.take(16)})")
+        
+        val result = R2Core.executeCommand(session.corePtr, command)
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeGetXrefs(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        
+        val address = args["address"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing address")
+        
+        val direction = args["direction"]?.jsonPrimitive?.content ?: "to"
+
+        val session = r2Sessions[sessionId]
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = when (direction) {
+            "from" -> "axf @ $address"  // 它调用了谁
+            else -> "axt @ $address"     // 谁调用了它
+        }
+        
+        logInfo("获取交叉引用 (地址: $address, 方向: $direction, Session: ${sessionId.take(16)})")
+        
+        val result = R2Core.executeCommand(session.corePtr, command)
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeGetInfo(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        
+        val detailed = args["detailed"]?.jsonPrimitive?.booleanOrNull ?: false
+
+        val session = r2Sessions[sessionId]
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = if (detailed) "iI" else "i"
+        
+        logInfo("获取文件信息 (详细: $detailed, Session: ${sessionId.take(16)})")
+        
+        val result = R2Core.executeCommand(session.corePtr, command)
+        
+        return createToolResult(true, output = result)
     }
 }
