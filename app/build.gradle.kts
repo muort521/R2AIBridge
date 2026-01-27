@@ -9,6 +9,15 @@ android {
     namespace = "com.r2aibridge"
     compileSdk = 34
 
+    signingConfigs {
+        create("release") {
+            storeFile = file("../keystore/r2aibridge.jks")
+            storePassword = "android"
+            keyAlias = "r2aibridge"
+            keyPassword = "android"
+        }
+    }
+
     defaultConfig {
         applicationId = "com.r2aibridge"
         minSdk = 26
@@ -36,6 +45,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -65,6 +75,9 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            useLegacyPackaging = true
         }
     }
 }
