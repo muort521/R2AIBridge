@@ -2,7 +2,6 @@ package com.r2aibridge.mcp
 
 import android.util.Log
 import com.r2aibridge.R2Core
-import com.r2aibridge.concurrency.R2ConcurrencyManager
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -19,14 +18,6 @@ object MCPServer {
     
     private const val TAG = "MCPServer"
     
-    // 会话数据类：存储文件路径和 R2 Core 指针
-    private data class R2Session(
-        val filePath: String,
-        val corePtr: Long,
-        val createdAt: Long = System.currentTimeMillis()
-    )
-    
-    private val r2Sessions = mutableMapOf<String, R2Session>()
     private val sseClients = mutableListOf<Channel<String>>()
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     
@@ -238,10 +229,12 @@ object MCPServer {
 
             get("/health") {
                 logInfo("健康检查")
+                val stats = R2SessionManager.getStats()
                 call.respondText(
                     "R2 MCP Server Running\n" +
-                    "Active Sessions: ${r2Sessions.size}\n" +
-                    "SSE Clients: ${sseClients.size}",
+                    "Active Sessions: ${R2SessionManager.getSessionCount()}\n" +
+                    "SSE Clients: ${sseClients.size}\n" +
+                    "Session Stats: $stats",
                     ContentType.Text.Plain
                 )
             }
@@ -526,7 +519,7 @@ object MCPServer {
         
         // session_id 可选，如果没有则自动创建
         var sessionId = args["session_id"]?.jsonPrimitive?.content
-        var session = if (sessionId != null) r2Sessions[sessionId] else null
+        var session = if (sessionId != null) R2SessionManager.getSession(sessionId) else null
         
         if (session == null) {
             // 创建新会话
@@ -543,9 +536,8 @@ object MCPServer {
                 return createToolResult(false, error = "Failed to open file: $filePath (r2_core_file_open returned false)")
             }
             
-            sessionId = "session_${System.currentTimeMillis()}"
-            session = R2Session(filePath, corePtr)
-            r2Sessions[sessionId] = session
+            sessionId = R2SessionManager.createSession(filePath, corePtr)
+            session = R2SessionManager.getSession(sessionId)!!
             logInfo("创建新会话: $sessionId (文件: ${file.absolutePath})")
         } else {
             logInfo("使用现有会话: $sessionId (文件: $filePath)")
@@ -585,57 +577,77 @@ object MCPServer {
 
         logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
 
-        return R2ConcurrencyManager.withFileLock(filePath) {
-            // 创建 R2 Core 实例
-            val corePtr = R2Core.initR2Core()
-            if (corePtr == 0L) {
-                logError("R2 Core 初始化失败")
-                return@withFileLock createToolResult(false, error = "Failed to initialize R2 core (r_core_new returned null)")
-            }
+        // 检查是否已有会话打开该文件
+        val existingSession = R2SessionManager.getSessionByFilePath(file.absolutePath)
+        if (existingSession != null) {
+            logInfo("文件已被会话 ${existingSession.sessionId} 打开，执行深度分析")
+            
+            // 在现有会话中执行深度分析
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(existingSession.corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            
+            val info = R2Core.executeCommand(existingSession.corePtr, "i")
+            val funcs = R2Core.executeCommand(existingSession.corePtr, "afl~?")
+            
+            return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[复用现有会话]\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        }
 
-            try {
-                // 打开文件（自动分析）
-                val opened = R2Core.openFile(corePtr, file.absolutePath)
-                if (!opened) {
-                    logError("打开文件失败", file.absolutePath)
-                    // 尝试获取错误详情
-                    val fileList = try {
-                        R2Core.executeCommand(corePtr, "o")
-                    } catch (e: Exception) {
-                        "Cannot get file list: ${e.message}"
-                    }
-                    val coreInfo = try {
-                        R2Core.executeCommand(corePtr, "i")
-                    } catch (e: Exception) {
-                        "Cannot get info: ${e.message}"
-                    }
-                    R2Core.closeR2Core(corePtr)
-                    return@withFileLock createToolResult(false, 
-                        error = "Failed to open file: ${file.absolutePath}\n\n" +
-                               "File info:\n" +
-                               "  - Exists: ${file.exists()}\n" +
-                               "  - Readable: ${file.canRead()}\n" +
-                               "  - Size: ${file.length()} bytes\n\n" +
-                               "R2 opened files: $fileList\n\n" +
-                               "R2 info: $coreInfo\n\n" +
-                               "Suggestion: Check if file is a valid binary format (ELF, PE, Mach-O, etc.)")
+        // 创建 R2 Core 实例
+        val corePtr = R2Core.initR2Core()
+        if (corePtr == 0L) {
+            logError("R2 Core 初始化失败")
+            return createToolResult(false, error = "Failed to initialize R2 core (r_core_new returned null)")
+        }
+
+        try {
+            // 打开文件
+            val opened = R2Core.openFile(corePtr, file.absolutePath)
+            if (!opened) {
+                logError("打开文件失败", file.absolutePath)
+                // 尝试获取错误详情
+                val fileList = try {
+                    R2Core.executeCommand(corePtr, "o")
+                } catch (e: Exception) {
+                    "Cannot get file list: ${e.message}"
                 }
-
-                // 创建会话
-                val sessionId = "session_${System.currentTimeMillis()}"
-                r2Sessions[sessionId] = R2Session(file.absolutePath, corePtr)
-
-                // 获取文件信息
-                val info = R2Core.executeCommand(corePtr, "i")
-                val funcs = R2Core.executeCommand(corePtr, "afl~?")
-
-                logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
-                createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n\n$info")
-            } catch (e: Exception) {
-                logError("分析过程异常", e.message)
+                val coreInfo = try {
+                    R2Core.executeCommand(corePtr, "i")
+                } catch (e: Exception) {
+                    "Cannot get info: ${e.message}"
+                }
                 R2Core.closeR2Core(corePtr)
-                return@withFileLock createToolResult(false, error = "Exception during analysis: ${e.message}")
+                return createToolResult(false, 
+                    error = "Failed to open file: ${file.absolutePath}\n\n" +
+                           "File info:\n" +
+                           "  - Exists: ${file.exists()}\n" +
+                           "  - Readable: ${file.canRead()}\n" +
+                           "  - Size: ${file.length()} bytes\n\n" +
+                           "R2 opened files: $fileList\n\n" +
+                           "R2 info: $coreInfo\n\n" +
+                           "Suggestion: Check if file is a valid binary format (ELF, PE, Mach-O, etc.)")
             }
+
+            // 创建会话
+            val sessionId = R2SessionManager.createSession(file.absolutePath, corePtr)
+
+            // 执行深度分析
+            logInfo("执行深度分析 (aaa)...")
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("深度分析完成，耗时 ${duration}ms")
+
+            // 获取文件信息
+            val info = R2Core.executeCommand(corePtr, "i")
+            val funcs = R2Core.executeCommand(corePtr, "afl~?")
+
+            logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
+            return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        } catch (e: Exception) {
+            logError("分析过程异常", e.message)
+            R2Core.closeR2Core(corePtr)
+            return createToolResult(false, error = "Exception during analysis: ${e.message}")
         }
     }
 
@@ -645,7 +657,7 @@ object MCPServer {
         val command = args["command"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing command")
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         logInfo("执行命令: $command (Session: ${sessionId.take(16)})")
@@ -664,7 +676,7 @@ object MCPServer {
         val sessionId = args["session_id"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing session_id")
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         logInfo("列出函数 (Session: ${sessionId.take(16)})")
@@ -680,7 +692,7 @@ object MCPServer {
         val address = args["address"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing address")
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         logInfo("反编译函数: $address (Session: ${sessionId.take(16)})")
@@ -697,7 +709,7 @@ object MCPServer {
             ?: return createToolResult(false, error = "Missing address")
         val lines = args["lines"]?.jsonPrimitive?.intOrNull ?: 10
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         logInfo("反汇编: $address ($lines 行)")
@@ -711,7 +723,7 @@ object MCPServer {
         val sessionId = args["session_id"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing session_id")
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         logInfo("获取函数列表 (Session: ${sessionId.take(16)})")
@@ -725,13 +737,10 @@ object MCPServer {
         val sessionId = args["session_id"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing session_id")
 
-        val session = r2Sessions.remove(sessionId)
+        val session = R2SessionManager.removeSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         logInfo("关闭会话: $sessionId (文件: ${session.filePath})")
-        
-        // 释放 R2 Core
-        R2Core.closeR2Core(session.corePtr)
         
         return createToolResult(true, output = "Session closed: $sessionId")
     }
@@ -755,7 +764,7 @@ object MCPServer {
 
         val mode = args["mode"]?.jsonPrimitive?.content ?: "data"
         
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         val command = when (mode) {
@@ -779,7 +788,7 @@ object MCPServer {
         
         val direction = args["direction"]?.jsonPrimitive?.content ?: "to"
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         val command = when (direction) {
@@ -800,7 +809,7 @@ object MCPServer {
         
         val detailed = args["detailed"]?.jsonPrimitive?.booleanOrNull ?: false
 
-        val session = r2Sessions[sessionId]
+        val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         val command = if (detailed) "iI" else "i"
