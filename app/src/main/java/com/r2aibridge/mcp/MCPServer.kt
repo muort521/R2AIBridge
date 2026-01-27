@@ -9,7 +9,6 @@ import io.ktor.server.plugins.contentnegotiation.*
 import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.coroutines.channels.Channel
 import kotlinx.serialization.json.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -18,7 +17,6 @@ object MCPServer {
     
     private const val TAG = "MCPServer"
     
-    private val sseClients = mutableListOf<Channel<String>>()
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     
     private val json = Json { 
@@ -114,7 +112,6 @@ object MCPServer {
                     put("status", "running")
                     put("endpoints", JsonArray(listOf(
                         JsonPrimitive("/messages - Standard MCP endpoint"),
-                        JsonPrimitive("/sse - Server-Sent Events endpoint"),
                         JsonPrimitive("/health - Health check")
                     )))
                 }
@@ -124,43 +121,6 @@ object MCPServer {
                     contentType = ContentType.Application.Json,
                     status = HttpStatusCode.OK
                 )
-            }
-
-            // SSE 端点（用于流式通信）
-            get("/sse") {
-                val clientIp = call.request.local.remoteHost
-                val logMsg = "📡 SSE连接: $clientIp"
-                logInfo(logMsg)
-                onLogEvent(logMsg)
-                
-                call.response.header("Content-Type", "text/event-stream")
-                call.response.header("Cache-Control", "no-cache")
-                call.response.header("Connection", "keep-alive")
-                
-                val channel = Channel<String>(Channel.UNLIMITED)
-                sseClients.add(channel)
-                
-                try {
-                    // 发送初始端点信息
-                    call.respondTextWriter(ContentType.Text.EventStream) {
-                        write("event: endpoint\n")
-                        write("data: /messages\n\n")
-                        flush()
-                        
-                        // 保持连接
-                        for (message in channel) {
-                            write("event: message\n")
-                            write("data: $message\n\n")
-                            flush()
-                        }
-                    }
-                } finally {
-                    sseClients.remove(channel)
-                    channel.close()
-                    val disconnectMsg = "📡 SSE断开: $clientIp"
-                    logInfo("SSE 连接已断开")
-                    onLogEvent(disconnectMsg)
-                }
             }
 
             post("/messages") {
@@ -279,7 +239,6 @@ object MCPServer {
                 call.respondText(
                     "R2 MCP Server Running\n" +
                     "Active Sessions: ${R2SessionManager.getSessionCount()}\n" +
-                    "SSE Clients: ${sseClients.size}\n" +
                     "Session Stats: $stats",
                     ContentType.Text.Plain
                 )
