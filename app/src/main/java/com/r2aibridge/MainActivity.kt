@@ -481,7 +481,7 @@ fun MainScreen(
                 modifier = Modifier.padding(16.dp)
             ) {
                 Text(
-                    text = "可用的 MCP 工具 (15个)",
+                    text = "可用的 MCP 工具 (17个)",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
@@ -491,7 +491,9 @@ fun MainScreen(
                     "⚡ r2_analyze_file - 深度分析 (aaa, 耗时较长)",
                     "🎯 r2_analyze_target - 智能分析策略 (精准下刀)",
                     "⚙️ r2_run_command - 执行 R2 命令 (通用)",
-                    "📋 r2_list_functions - 列出函数列表",
+                    "⚙️ r2_config_manager - 配置管理 (动态调整分析参数)",
+                    "🔧 r2_analysis_hints - 分析提示 (手动修正分析错误)",
+                    "📝 r2_list_functions - 列出函数列表",
                     "📝 r2_list_strings - 列出字符串 (逆向第一步)",
                     "🔗 r2_get_xrefs - 获取交叉引用 (逻辑追踪)",
                     "🔗 r2_manage_xrefs - 管理交叉引用 (手动修复)",

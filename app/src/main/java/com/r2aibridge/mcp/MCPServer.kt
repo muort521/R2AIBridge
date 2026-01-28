@@ -557,6 +557,42 @@ object MCPServer {
                     "path" to mapOf("type" to "string", "description" to "目标文件的绝对路径")
                 ),
                 listOf("path")
+            ),
+            createToolSchema(
+                "r2_config_manager",
+                "⚙️ [配置管理] 管理 Radare2 的分析与显示配置 (eval variables)。\n" +
+                "当分析结果不理想、函数截断或需要深度分析时使用。\n" +
+                "关键配置参考：\n" +
+                "- 流量控制: 'anal.hasnext' (继续分析后续代码), 'anal.jmp.after' (无条件跳转后继续)\n" +
+                "- 混淆/大块: 'anal.bb.maxsize' (调整基本块大小限制)\n" +
+                "- 引用/字符串: 'anal.strings' (开启字符串引用,默认关闭), 'anal.datarefs' (代码引用数据)\n" +
+                "- 边界范围 (anal.in): 'io.maps' (分析所有映射), 'dbg.stack' (分析栈), 'bin.section' (当前段)\n" +
+                "- 跳转表: 'anal.jmp.tbl' (开启实验性跳转表分析)",
+                mapOf(
+                    "action" to mapOf("type" to "string", "enum" to listOf("get", "set", "list"), "description" to "操作类型：get(读取当前值), set(修改值), list(搜索配置项)"),
+                    "key" to mapOf("type" to "string", "description" to "配置键名，例如 'anal.strings' 或 'anal.in'"),
+                    "value" to mapOf("type" to "string", "description" to "要设置的新值 (仅 set 模式需要)。例如 'true', 'false', 'io.maps'")
+                ),
+                listOf("action", "key")
+            ),
+            createToolSchema(
+                "r2_analysis_hints",
+                "🔧 [分析提示] 管理分析提示 (Analysis Hints)。用于手动修正 R2 的分析错误，或优化反汇编显示。\n" +
+                "当反汇编结果看起来不对（如代码被当成数据）、立即数格式难以理解（如需要看 IP 地址/十进制）、或控制流中断时使用。\n" +
+                "操作说明：\n" +
+                "- 'list' (ah): 列出当前地址的提示。\n" +
+                "- 'set_base' (ahi): 修改立即数显示进制 (value='10'十进制, '16'十六进制, 's'字符串, 'i'IP地址)。\n" +
+                "- 'set_arch' (aha): 强制指定后续代码的架构 (value='arm', 'x86')。\n" +
+                "- 'set_bits' (ahb): 强制指定位数 (value='16', '32', '64')。\n" +
+                "- 'override_jump' (ahc): 强制指定 Call/Jmp 的跳转目标地址 (修复间接跳转)。\n" +
+                "- 'override_opcode' (ahd): 直接用自定义字符串替换当前指令显示的文本。\n" +
+                "- 'remove' (ah-): 清除当前地址的所有提示。",
+                mapOf(
+                    "action" to mapOf("type" to "string", "enum" to listOf("list", "set_base", "set_arch", "set_bits", "override_jump", "override_opcode", "remove"), "description" to "提示操作类型"),
+                    "address" to mapOf("type" to "string", "description" to "可选：目标地址（默认为当前光标位置）。"),
+                    "value" to mapOf("type" to "string", "description" to "参数值。例如进制类型('10', 's')、架构名、跳转目标地址或替换的指令字符串。")
+                ),
+                listOf("action")
             )
         )
         
@@ -627,6 +663,8 @@ object MCPServer {
                 "r2_close_session" -> executeCloseSession(arguments)
                 "r2_analyze_target" -> executeAnalyzeTarget(arguments)
                 "r2_manage_xrefs" -> executeManageXrefs(arguments)
+                "r2_config_manager" -> executeConfigManager(arguments)
+                "r2_analysis_hints" -> executeAnalysisHints(arguments)
                 "os_list_dir" -> executeOsListDir(arguments)
                 "os_read_file" -> executeOsReadFile(arguments)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
@@ -1470,6 +1508,144 @@ object MCPServer {
         }
 
         return createToolResult(true, output = resultText)
+    }
+
+    /**
+     * 执行 r2_config_manager 工具
+     */
+    private suspend fun executeConfigManager(args: JsonObject): JsonElement {
+        val action = args["action"]?.jsonPrimitive?.content ?: "get"
+        val key = args["key"]?.jsonPrimitive?.content ?: ""
+        val value = args["value"]?.jsonPrimitive?.content ?: ""
+
+        if (key.isEmpty()) {
+            return createToolResult(false, error = "必须指定配置键名 (key)")
+        }
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        logInfo("执行配置管理: $action (键: $key, 值: $value, 会话: ${sessionId.take(16)})")
+
+        val resultText = when (action) {
+            "get" -> {
+                // 命令: e key
+                val output = R2Core.executeCommand(session.corePtr, "e $key").trim()
+                if (output.isEmpty()) {
+                    "⚠️ 未找到配置项: $key"
+                } else {
+                    "$key = $output"
+                }
+            }
+            "set" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "set 操作需要指定值 (value)")
+                }
+                // 命令: e key=value
+                R2Core.executeCommand(session.corePtr, "e $key=$value")
+
+                // 双重确认：读取修改后的值
+                val current = R2Core.executeCommand(session.corePtr, "e $key").trim()
+                if (current == value || (value == "true" && current == "true") || (value == "false" && current == "false")) {
+                    "✅ 配置已更新: $key = $current"
+                } else {
+                    "⚠️ 配置更新可能失败，当前值: $key = $current"
+                }
+            }
+            "list" -> {
+                // 命令: e? key (搜索相关配置)
+                val output = R2Core.executeCommand(session.corePtr, "e? $key")
+                "🔎 搜索 '$key' 的结果:\n$output"
+            }
+            else -> "❌ 未知操作: $action"
+        }
+
+        return createToolResult(true, output = resultText)
+    }
+
+    /**
+     * 执行 r2_analysis_hints 工具
+     */
+    private suspend fun executeAnalysisHints(args: JsonObject): JsonElement {
+        val action = args["action"]?.jsonPrimitive?.content ?: "list"
+        val address = args["address"]?.jsonPrimitive?.content ?: ""
+        val value = args["value"]?.jsonPrimitive?.content ?: ""
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        // 构造地址后缀
+        val addrSuffix = if (address.isNotEmpty()) " @ $address" else ""
+        val checkAddr = address
+
+        logInfo("执行分析提示: $action (地址: ${address.ifEmpty { "当前位置" }}, 值: $value, 会话: ${sessionId.take(16)})")
+
+        val resultText = when (action) {
+            "list" -> {
+                val output = R2Core.executeCommand(session.corePtr, "ah$addrSuffix").trim()
+                if (output.isBlank()) {
+                    "ℹ️ 该地址没有分析提示。"
+                } else {
+                    output
+                }
+            }
+            "set_base" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定进制类型 (value)，如 10, 16, s, i")
+                }
+                R2Core.executeCommand(session.corePtr, "ahi $value$addrSuffix")
+                "✅ 已修改数值显示格式为 '$value'"
+            }
+            "set_arch" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定架构 (value)，如 arm, x86")
+                }
+                R2Core.executeCommand(session.corePtr, "aha $value$addrSuffix")
+                "✅ 已强制设置架构为 '$value'"
+            }
+            "set_bits" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定位数 (value)，如 32, 64")
+                }
+                R2Core.executeCommand(session.corePtr, "ahb $value$addrSuffix")
+                "✅ 已强制设置位数为 '$value' bits"
+            }
+            "override_jump" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定跳转目标地址 (value)")
+                }
+                R2Core.executeCommand(session.corePtr, "ahc $value$addrSuffix")
+                "✅ 已强制覆盖跳转目标为 $value"
+            }
+            "override_opcode" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定新的指令字符串 (value)")
+                }
+                // ahd 需要特殊处理，因为它接受包含空格的字符串
+                // 格式: ahd string @ address
+                R2Core.executeCommand(session.corePtr, "ahd $value$addrSuffix")
+                "✅ 已将指令文本替换为: \"$value\""
+            }
+            "remove" -> {
+                R2Core.executeCommand(session.corePtr, "ah-$addrSuffix")
+                "✅ 已清除该地址的分析提示"
+            }
+            else -> "❌ 未知操作: $action"
+        }
+
+        // --- 关键：执行完提示后，立即查看效果 ---
+        // pd 1 @ address (打印 1 条指令)
+        val previewCmd = if (checkAddr.isNotEmpty()) "pd 1 @ $checkAddr" else "pd 1"
+        val preview = R2Core.executeCommand(session.corePtr, previewCmd).trim()
+
+        val finalOutput = "$resultText\n\n🔍 当前效果预览:\n$preview"
+        return createToolResult(true, output = finalOutput)
     }
 
     /**
