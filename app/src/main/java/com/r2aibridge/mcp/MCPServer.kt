@@ -126,45 +126,50 @@ object MCPServer {
             post("/messages") {
                 var requestId: JsonElement? = null
                 var method = "unknown"
-                
+
                 try {
                     val requestBody = call.receiveText()
-                    
+
                     if (requestBody.isBlank()) {
+                        val errorObj = buildJsonObject {
+                            put("code", -32700)
+                            put("message", "Empty request body")
+                        }
+                        val errorResp = buildJsonObject {
+                            put("jsonrpc", "2.0")
+                            put("id", JsonNull)
+                            put("error", errorObj)
+                        }.toString()
+
                         call.respondText(
-                            text = json.encodeToString(MCPErrorResponse.serializer(), 
-                                MCPErrorResponse(
-                                    id = null,
-                                    error = MCPError(-32700, "Empty request body")
-                                )
-                            ),
+                            text = errorResp,
                             contentType = ContentType.Application.Json,
                             status = HttpStatusCode.BadRequest
                         )
                         return@post
                     }
-                    
+
                     val request = json.decodeFromString<MCPRequest>(requestBody)
                     requestId = request.id
                     method = request.method
-                    
+
                     val idStr = when (val id = request.id) {
                         is JsonPrimitive -> id.content.take(8)
                         else -> "null"
                     }
-                    
+
                     val clientIp = call.request.local.remoteHost
                     val logMsg = "📥 ${request.method} | $clientIp | ID:$idStr"
                     logInfo("[App -> R2] ${request.method} (ID: $idStr)")
                     onLogEvent(logMsg)
-                    
+
                     // 处理通知（不需要响应）
                     if (method == "notifications/initialized") {
                         logInfo("客户端已初始化")
                         call.respond(HttpStatusCode.NoContent)
                         return@post
                     }
-                    
+
                     val result = when (request.method) {
                         "initialize" -> handleInitialize(request.params)
                         "tools/list" -> handleToolsList()
@@ -176,33 +181,42 @@ object MCPServer {
                         }
                         else -> {
                             logError("未知方法", method)
+                            val errorObj = buildJsonObject {
+                                put("code", -32601)
+                                put("message", "Method not found: ${request.method}")
+                            }
+                            val errorResp = buildJsonObject {
+                                put("jsonrpc", "2.0")
+                                put("id", request.id ?: JsonNull)
+                                put("error", errorObj)
+                            }.toString()
+
                             call.respondText(
-                                text = json.encodeToString(MCPErrorResponse.serializer(),
-                                    MCPErrorResponse(
-                                        id = request.id,
-                                        error = MCPError(-32601, "Method not found: ${request.method}")
-                                    )
-                                ),
+                                text = errorResp,
                                 contentType = ContentType.Application.Json,
                                 status = HttpStatusCode.OK
                             )
                             return@post
                         }
                     }
-                    
-                    val response = MCPResponse(id = request.id, result = result)
-                    val responseJson = json.encodeToString(MCPResponse.serializer(), response)
-                    
+
+                    // 🔥 手动构建响应 JSON，强制包含 jsonrpc: "2.0"
+                    val responseJson = buildJsonObject {
+                        put("jsonrpc", "2.0")
+                        put("id", request.id ?: JsonNull)
+                        put("result", result)
+                    }.toString()
+
                     // 记录响应
                     if (responseJson.length < 500) {
                         logInfo("[R2 -> App] ${responseJson.take(200)}")
                     } else {
                         logInfo("[R2 -> App] ${responseJson.length} bytes")
                     }
-                    
+
                     // 设置响应头
                     call.response.header(HttpHeaders.CacheControl, "no-cache")
-                    
+
                     call.respondText(
                         text = responseJson,
                         contentType = ContentType.Application.Json,
@@ -211,14 +225,19 @@ object MCPServer {
                 } catch (e: Exception) {
                     logError("处理请求失败", e.message)
                     onLogEvent("⚠️ 错误: ${e.message}")
-                    
+
+                    val errorObj = buildJsonObject {
+                        put("code", -32603)
+                        put("message", "Internal error: ${e.message}")
+                    }
+                    val errorResp = buildJsonObject {
+                        put("jsonrpc", "2.0")
+                        put("id", requestId ?: JsonNull)
+                        put("error", errorObj)
+                    }.toString()
+
                     call.respondText(
-                        text = json.encodeToString(MCPErrorResponse.serializer(),
-                            MCPErrorResponse(
-                                id = requestId,
-                                error = MCPError(-32603, "Internal error: ${e.message}")
-                            )
-                        ),
+                        text = errorResp,
                         contentType = ContentType.Application.Json,
                         status = HttpStatusCode.OK
                     )
@@ -252,21 +271,27 @@ object MCPServer {
      * 处理 initialize 方法 - 协议版本协商
      */
     private fun handleInitialize(params: JsonObject?): JsonElement {
-        // 提取客户端请求的协议版本
+        // 1. 获取客户端发来的协议版本
         val clientProtocolVersion = params?.get("protocolVersion")?.jsonPrimitive?.content
         
-        // 协议版本协商：优先使用客户端版本，否则使用默认版本
+        // 2. 协商逻辑：如果客户端提供了版本，就原样返回（表示支持）；否则使用默认值
         val negotiatedVersion = clientProtocolVersion ?: "2024-11-05"
         
-        logInfo("初始化协议版本: $negotiatedVersion")
+        logInfo("协议协商: 客户端=$clientProtocolVersion -> 最终使用=$negotiatedVersion")
         
         return buildJsonObject {
+            // 必须回传协商后的版本号
             put("protocolVersion", negotiatedVersion)
+            
+            // 必须声明 capabilities (能力)，否则客户端不会请求工具列表
             put("capabilities", buildJsonObject {
                 put("tools", buildJsonObject {
-                    put("listChanged", false)
+                    put("listChanged", false) // 设为 true 可以在工具列表变更时通知客户端
                 })
+                // 如果将来支持 logging 或 resources，也在这里添加
             })
+            
+            // 服务器信息
             put("serverInfo", buildJsonObject {
                 put("name", "Radare2 MCP Server")
                 put("version", "1.0")
