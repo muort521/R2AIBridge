@@ -156,7 +156,7 @@ if (result == null) {
 **修改端口**:
 ```kotlin
 companion object {
-    private const val PORT = 8080  // 从 3000 改为 8080
+    private const val PORT = 8080  // 从 5050 改为 8080
 }
 ```
 
@@ -251,12 +251,12 @@ adb logcat -c && adb logcat
 
 ```bash
 # 使用 curl 测试
-curl -v http://192.168.1.100:3000/health
+curl -v http://192.168.1.100:5050/health
 
 # 使用 Postman 或 Insomnia 测试 MCP 请求
 
 # 查看网络流量
-adb shell tcpdump -i wlan0 port 3000
+adb shell tcpdump -i wlan0 port 5050
 ```
 
 ## 📦 构建变体

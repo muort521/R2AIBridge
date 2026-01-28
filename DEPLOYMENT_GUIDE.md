@@ -48,7 +48,7 @@ sys/android-build.sh
 {
   "mcpServers": {
     "radare2": {
-      "url": "http://192.168.2.22:3000",
+      "url": "http://192.168.2.22:5050",
       "transport": "sse"
     }
   }
@@ -57,7 +57,7 @@ sys/android-build.sh
 
 或使用 HTTP endpoint：
 ```
-POST http://192.168.2.22:3000/messages
+POST http://192.168.2.22:5050/messages
 ```
 
 ---
@@ -135,7 +135,7 @@ POST http://192.168.2.22:3000/messages
 
 #### 1. Initialize（初始化）
 ```bash
-curl -X POST http://192.168.2.22:3000/messages \
+curl -X POST http://192.168.2.22:5050/messages \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -147,7 +147,7 @@ curl -X POST http://192.168.2.22:3000/messages \
 
 #### 2. Tools List（获取工具列表）
 ```bash
-curl -X POST http://192.168.2.22:3000/messages \
+curl -X POST http://192.168.2.22:5050/messages \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -159,7 +159,7 @@ curl -X POST http://192.168.2.22:3000/messages \
 #### 3. Tools Call（调用工具）
 ```bash
 # 分析文件
-curl -X POST http://192.168.2.22:3000/messages \
+curl -X POST http://192.168.2.22:5050/messages \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -174,7 +174,7 @@ curl -X POST http://192.168.2.22:3000/messages \
   }'
 
 # 列出函数
-curl -X POST http://192.168.2.22:3000/messages \
+curl -X POST http://192.168.2.22:5050/messages \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -191,12 +191,12 @@ curl -X POST http://192.168.2.22:3000/messages \
 
 #### 4. Health Check（健康检查）
 ```bash
-curl http://192.168.2.22:3000/health
+curl http://192.168.2.22:5050/health
 ```
 
 #### 5. SSE（流式连接）
 ```bash
-curl -N http://192.168.2.22:3000/sse
+curl -N http://192.168.2.22:5050/sse
 ```
 
 ---

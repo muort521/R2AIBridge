@@ -126,7 +126,7 @@ adb install app/build/outputs/apk/debug/app-debug.apk
 
 ### 3. 测试 MCP 服务
 ```bash
-curl http://<设备IP>:3000/tools/list
+curl http://<设备IP>:5050/tools/list
 ```
 
 ---

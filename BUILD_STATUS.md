@@ -143,7 +143,7 @@ adb logcat | grep R2AIBridge
 adb shell ip addr show wlan0
 
 # 测试 MCP 端点
-curl http://<DEVICE_IP>:3000/tools/list
+curl http://<DEVICE_IP>:5050/tools/list
 ```
 
 ### 4. 预期响应

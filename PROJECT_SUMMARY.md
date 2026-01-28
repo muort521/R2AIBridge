@@ -77,7 +77,7 @@
 ### 步骤 5: ✅ 实现前台服务与通知
 - `onCreate` 创建 NotificationChannel "R2服务"
 - `onStartCommand` 返回 `START_STICKY` 实现自动重启
-- 启动 Ktor 服务器绑定 0.0.0.0:3000
+- 启动 Ktor 服务器绑定 0.0.0.0:5050
 - 持久通知显示:
   - 本地 IP:端口
   - 当前命令状态
@@ -107,7 +107,7 @@
 - 权限请求流程 (`ActivityResultContracts`)
 - 服务控制按钮 (启动/停止)
 - 显示本地 IP 地址（通过 NetworkInterface 获取）
-- 端口显示 (3000)
+- 端口显示 (5050)
 - 命令历史 LazyColumn
 - Material 3 设计
 - 状态管理
@@ -146,7 +146,7 @@ app/build/outputs/apk/debug/app-debug.apk
 2. **授予权限** - 允许存储、网络、通知权限
 3. **启动服务** - 点击"启动服务"按钮
 4. **获取 IP** - 查看通知栏显示的设备 IP
-5. **发送请求** - 通过 HTTP 客户端访问 `http://<IP>:3000/messages`
+5. **发送请求** - 通过 HTTP 客户端访问 `http://<IP>:5050/messages`
 
 ## 🔧 技术亮点
 

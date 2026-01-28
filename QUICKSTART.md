@@ -47,23 +47,23 @@ Android Studio 会自动提示同步，或手动点击 "Sync Project with Gradle
 1. **打开应用** "R2 AI Bridge"
 2. **授予所有权限** (存储、网络、通知)
 3. **点击"启动服务"** 
-4. **查看通知栏** 记录显示的 IP 地址，例如 `192.168.1.100:3000`
+4. **查看通知栏** 记录显示的 IP 地址，例如 `192.168.1.100:5050`
 
 ### 7️⃣ 测试 MCP 服务
 
 ```bash
 # 健康检查
-curl http://192.168.1.100:3000/health
+curl http://192.168.1.100:5050/health
 
 # 列出工具
-curl -X POST http://192.168.1.100:3000/messages \
+curl -X POST http://192.168.1.100:5050/messages \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 
 # 分析文件 (先将测试文件放到设备)
 adb push test_binary /sdcard/Download/test_binary
 
-curl -X POST http://192.168.1.100:3000/messages \
+curl -X POST http://192.168.1.100:5050/messages \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",
@@ -101,7 +101,7 @@ Tools → SDK Manager → SDK Tools → 勾选 NDK (Side by side)
 ### Q: 找不到设备 IP
 **A:** 确保设备连接到 WiFi，可以在应用中查看或使用 `adb shell ip addr`
 
-### Q: 端口 3000 被占用
+### Q: 端口 5050 被占用
 **A:** 修改 `R2ServiceForeground.kt` 中的 `PORT` 常量
 
 ### Q: 权限被拒绝
