@@ -123,7 +123,7 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(logEventReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(logEventReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(logEventReceiver, filter)
         }
         
         requestRequiredPermissions()
