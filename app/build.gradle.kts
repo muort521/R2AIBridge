@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "com.r2aibridge"
-    compileSdk = 34
+    compileSdk = 36
 
     signingConfigs {
         create("release") {
@@ -21,9 +21,9 @@ android {
     defaultConfig {
         applicationId = "com.r2aibridge"
         minSdk = 26
-        targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        targetSdk = 36
+        versionCode = 260129
+        versionName = "2.0"
         
         ndkVersion = "25.2.9519653"
 

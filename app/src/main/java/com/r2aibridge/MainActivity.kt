@@ -267,7 +267,8 @@ fun MainScreen(
         val dateFormat = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault())
         val timestamp = dateFormat.format(now)
         val pid = android.os.Process.myPid()
-        val tid = Thread.currentThread().id
+        // 使用 System.nanoTime() 的哈希值作为线程ID的替代方案
+        val tid = (System.nanoTime() % 100000).toInt()
         return String.format("%s %5d %5d %s %s    : %s", timestamp, pid, tid, level, tag, message)
     }
     
@@ -295,17 +296,11 @@ fun MainScreen(
     
     SideEffect {
         val window = (view.context as ComponentActivity).window
-        window.statusBarColor = Color.Transparent.toArgb()
-        window.navigationBarColor = Color.Transparent.toArgb()
         
         // 设置状态栏图标颜色：明亮模式用深色图标，深色模式用浅色图标
         WindowInsetsControllerCompat(window, view).apply {
             isAppearanceLightStatusBars = !darkTheme
             isAppearanceLightNavigationBars = !darkTheme
-        }
-        
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            window.setDecorFitsSystemWindows(false)
         }
     }
     
