@@ -2,13 +2,13 @@
 
 > ✅ **构建状态**: 成功 | **APK**: `app/build/outputs/apk/debug/app-debug.apk`
 
-将 Radare2 逆向引擎集成到 Android App，通过前台服务运行 Ktor HTTP 服务器，暴露 5 个核心 MCP 工具。
+将 Radare2 逆向引擎集成到 Android App，通过前台服务运行 Ktor HTTP 服务器，暴露 7 个核心 MCP 工具。
 
 ## 🎯 核心特性
 
 - ✅ **命令行集成**: 通过 JNI 包装 Radare2 CLI（避免复杂的头文件依赖）
 - ✅ **前台服务**: 后台运行 Ktor HTTP 服务器 (端口 5050)
-- ✅ **MCP 协议**: JSON-RPC 2.0 实现，5 个 Radare2 工具
+- ✅ **MCP 协议**: JSON-RPC 2.0 实现，7 个 Radare2 + OS 工具
 - ✅ **并发管理**: 16 桶锁机制，支持多客户端
 - ✅ **Material 3 UI**: Jetpack Compose 现代界面
 - ✅ **零头文件依赖**: 简化的 CMake 配置
@@ -51,18 +51,46 @@ app/
 
 ## MCP 工具列表
 
-服务器在 `0.0.0.0:5050` 端点暴露以下 5 个 MCP 工具：
+服务器在 `0.0.0.0:5050` 端点暴露以下 14 个 MCP 工具：
 
-### 1. r2_analyze_file
-分析二进制文件，加载文件并执行自动分析。
+### 1. r2_open_file
+打开二进制文件并执行基础分析。
+
+**参数:**
+- `file_path` (string) - 要分析的文件路径
+- `auto_analyze` (boolean, optional) - 是否自动执行基础分析 (默认 true)
+
+**返回:**
+- 会话 ID 和文件基本信息
+
+### 2. r2_analyze_file
+执行深度分析 (aaa) 并自动释放资源。
 
 **参数:**
 - `file_path` (string) - 要分析的文件路径
 
 **返回:**
-- 会话 ID 和文件基本信息
+- 分析结果和文件信息
 
-### 2. r2_execute_command
+### 3. r2_analyze_target
+执行特定的 Radare2 递归分析策略。智能选择分析策略，避免盲目使用全量分析。
+
+**策略说明:**
+- `basic` (aa): 基础分析，识别符号和入口点
+- `blocks` (aab): 分析基本块结构，修复函数截断问题
+- `calls` (aac): 递归分析函数调用，发现未识别的子函数
+- `refs` (aar): 分析数据引用，识别字符串引用和全局变量
+- `pointers` (aad): 分析数据段指针，用于C++虚表和跳转表恢复
+- `full` (aaa): 全量深度分析（耗时极长，仅在小文件或必要时使用）
+
+**参数:**
+- `strategy` (string) - 分析策略模式
+- `address` (string, optional) - 指定分析的起始地址或符号
+
+**返回:**
+- 分析结果和状态反馈
+
+### 4. r2_run_command
 执行任意 Radare2 命令。
 
 **参数:**
@@ -72,7 +100,61 @@ app/
 **返回:**
 - 命令执行结果
 
-### 3. r2_disassemble
+### 4. r2_list_functions
+列出二进制文件中的已识别函数。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `filter` (string, optional) - 函数名过滤器
+- `limit` (integer, optional) - 最大返回数量 (默认 500)
+
+**返回:**
+- 函数列表
+
+### 5. r2_list_strings
+列出二进制文件中的字符串。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `mode` (string, optional) - 搜索模式 ('data' 或 'all')
+- `min_length` (integer, optional) - 最小字符串长度 (默认 5)
+
+**返回:**
+- 字符串列表
+
+### 6. r2_get_xrefs
+获取指定地址/函数的交叉引用。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `address` (string) - 目标地址或函数名
+- `direction` (string, optional) - 引用方向 ('to' 或 'from')
+- `limit` (integer, optional) - 最大返回数量 (默认 50)
+
+**返回:**
+- 交叉引用列表
+
+### 7. r2_get_info
+获取二进制文件的详细信息。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `detailed` (boolean, optional) - 是否显示详细信息 (默认 false)
+
+**返回:**
+- 文件信息
+
+### 8. r2_decompile_function
+反编译指定地址的函数为伪代码。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `address` (string) - 函数地址
+
+**返回:**
+- 反编译代码
+
+### 9. r2_disassemble
 反汇编指定地址的代码。
 
 **参数:**
@@ -83,16 +165,16 @@ app/
 **返回:**
 - 反汇编输出
 
-### 4. r2_get_functions
-获取二进制文件中的函数列表。
+### 10. r2_test
+测试 Radare2 库是否正常工作。
 
 **参数:**
-- `session_id` (string) - 会话 ID
+- 无
 
 **返回:**
-- 函数列表
+- 测试结果
 
-### 5. r2_close_session
+### 11. r2_close_session
 关闭 Radare2 会话，释放资源。
 
 **参数:**
@@ -100,6 +182,42 @@ app/
 
 **返回:**
 - 关闭确认
+
+### 12. os_list_dir
+列出指定文件夹下的内容，支持 Root 权限访问受保护目录。
+
+**参数:**
+- `path` (string) - 目标文件夹的绝对路径
+
+**返回:**
+- 目录内容列表，包含文件类型和大小
+
+### 13. os_read_file
+读取指定文件的文本内容，支持 Root 权限和大文件截断保护。
+
+**参数:**
+- `path` (string) - 目标文件的绝对路径
+
+**返回:**
+- 文件内容（自动截断大文件以防 OOM）
+
+### 14. r2_analyze_target
+执行特定的 Radare2 递归分析策略。智能选择分析策略，避免盲目使用全量分析。
+
+**策略说明:**
+- `basic` (aa): 基础分析，识别符号和入口点
+- `blocks` (aab): 分析基本块结构，修复函数截断问题
+- `calls` (aac): 递归分析函数调用，发现未识别的子函数
+- `refs` (aar): 分析数据引用，识别字符串引用和全局变量
+- `pointers` (aad): 分析数据段指针，用于C++虚表和跳转表恢复
+- `full` (aaa): 全量深度分析（耗时极长，仅在小文件或必要时使用）
+
+**参数:**
+- `strategy` (string) - 分析策略模式
+- `address` (string, optional) - 指定分析的起始地址或符号
+
+**返回:**
+- 分析结果和状态反馈
 
 ## API 端点
 

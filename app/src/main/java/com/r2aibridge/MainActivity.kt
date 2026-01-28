@@ -484,7 +484,7 @@ fun MainScreen(
                 modifier = Modifier.padding(16.dp)
             ) {
                 Text(
-                    text = "可用的 MCP 工具 (11个)",
+                    text = "可用的 MCP 工具 (14个)",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
@@ -492,6 +492,7 @@ fun MainScreen(
                 val tools = listOf(
                     "🚪 r2_open_file - 打开文件 (默认 aa 基础分析)",
                     "⚡ r2_analyze_file - 深度分析 (aaa, 耗时较长)",
+                    "🎯 r2_analyze_target - 智能分析策略 (精准下刀)",
                     "⚙️ r2_run_command - 执行 R2 命令 (通用)",
                     "📋 r2_list_functions - 列出函数列表",
                     "📝 r2_list_strings - 列出字符串 (逆向第一步)",
@@ -500,7 +501,9 @@ fun MainScreen(
                     "🔍 r2_decompile_function - 反编译函数",
                     "📜 r2_disassemble - 反汇编代码",
                     "🧪 r2_test - 测试 R2 库状态 (诊断)",
-                    "🔒 r2_close_session - 关闭会话"
+                    "🔒 r2_close_session - 关闭会话",
+                    "📁 os_list_dir - 列出目录内容 (支持 Root)",
+                    "📄 os_read_file - 读取文件内容 (支持 Root)"
                 )
                 
                 tools.forEach { tool ->

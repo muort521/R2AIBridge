@@ -2,6 +2,7 @@ package com.r2aibridge.mcp
 
 import android.util.Log
 import com.r2aibridge.R2Core
+import com.r2aibridge.ShellUtils
 import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import io.ktor.server.application.*
@@ -506,6 +507,38 @@ object MCPServer {
                     "session_id" to mapOf("type" to "string", "description" to "要关闭的会话 ID")
                 ),
                 listOf("session_id")
+            ),
+            createToolSchema(
+                "r2_analyze_target",
+                "🎯 [智能分析] 执行特定的 Radare2 递归分析策略。请根据分析需求选择最轻量级的策略，避免盲目使用全量分析。\n" +
+                "策略说明：\n" +
+                "- 'basic' (aa): 基础分析，识别符号和入口点。\n" +
+                "- 'blocks' (aab): 仅分析当前函数或地址的基本块结构（修复函数截断问题）。\n" +
+                "- 'calls' (aac): 递归分析函数调用目标（发现未识别的子函数）。\n" +
+                "- 'refs' (aar): 分析数据引用（识别字符串引用、全局变量）。\n" +
+                "- 'pointers' (aad): 分析数据段指针（用于 C++ 虚表、跳转表恢复）。\n" +
+                "- 'full' (aaa): 全量深度分析（耗时极长，仅在小文件或必要时使用）。",
+                mapOf(
+                    "strategy" to mapOf("type" to "string", "enum" to listOf("basic", "blocks", "calls", "refs", "pointers", "full"), "description" to "分析策略模式"),
+                    "address" to mapOf("type" to "string", "description" to "可选：指定分析的起始地址或符号（例如 '0x00401000' 或 'sym.main'）。如果不填，默认分析全局或当前位置。")
+                ),
+                listOf("strategy")
+            ),
+            createToolSchema(
+                "os_list_dir",
+                "📁 [文件系统] 列出指定文件夹下的内容。如果遇到权限拒绝（如 /data/data），会自动尝试使用 Root 权限列出。输出包含文件类型（DIR/FILE）和大小。",
+                mapOf(
+                    "path" to mapOf("type" to "string", "description" to "目标文件夹的绝对路径，例如 /sdcard/ 或 /data/local/tmp/")
+                ),
+                listOf("path")
+            ),
+            createToolSchema(
+                "os_read_file",
+                "📄 [文件系统] 读取指定文件的文本内容。支持系统文件和受保护文件的 Root 读取。包含大文件自动截断保护。",
+                mapOf(
+                    "path" to mapOf("type" to "string", "description" to "目标文件的绝对路径")
+                ),
+                listOf("path")
             )
         )
         
@@ -574,6 +607,9 @@ object MCPServer {
                 "r2_disassemble" -> executeDisassemble(arguments)
                 "r2_test" -> executeTestR2(arguments)
                 "r2_close_session" -> executeCloseSession(arguments)
+                "r2_analyze_target" -> executeAnalyzeTarget(arguments)
+                "os_list_dir" -> executeOsListDir(arguments)
+                "os_read_file" -> executeOsReadFile(arguments)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
             
@@ -1213,5 +1249,157 @@ object MCPServer {
         val result = R2Core.executeCommand(session.corePtr, command)
         
         return createToolResult(true, output = result)
+    }
+
+    /**
+     * 执行 os_list_dir 工具
+     */
+    private suspend fun executeOsListDir(args: JsonObject): JsonElement {
+        val pathStr = args["path"]?.jsonPrimitive?.content ?: "/"
+        val dir = java.io.File(pathStr)
+        val resultLines = mutableListOf<String>()
+        var usedRoot = false
+
+        // --- 阶段 1: 尝试 Java 标准 API (快速，无 Root 开销) ---
+        val files = dir.listFiles()
+        if (files != null) {
+            files.forEach { file ->
+                val type = if (file.isDirectory) "[DIR] " else "[FILE]"
+                val size = if (file.isFile) String.format("%-8s", "(${file.length()})") else "        "
+                resultLines.add("$type $size ${file.name}")
+            }
+        } else {
+            // --- 阶段 2: Java API 失败 (通常是权限问题)，尝试 Root ---
+            // 使用 ls -p -l 或类似命令。这里用简单的 ls -p 区分文件夹
+            val cmd = "ls -p \"$pathStr\""
+            val output = ShellUtils.execCommand(cmd, isRoot = true)
+
+            if (output.isSuccess) {
+                usedRoot = true
+                output.successMsg.lines().forEach { line ->
+                    if (line.isNotBlank()) {
+                        val type = if (line.endsWith("/")) "[DIR] " else "[FILE]"
+                        val name = line.removeSuffix("/")
+                        resultLines.add("$type $name")
+                    }
+                }
+            } else {
+                // Root 也失败了
+                return createToolResult(false, error = "❌ 无法访问目录: $pathStr\n错误信息: ${output.errorMsg}")
+            }
+        }
+
+        val header = if (usedRoot) "=== 目录列表 (Root Access) ===\n" else "=== 目录列表 ===\n"
+        val body = if (resultLines.isEmpty()) "(目录为空)" else resultLines.joinToString("\n")
+
+        return createToolResult(true, output = header + body)
+    }
+
+    /**
+     * 执行 os_read_file 工具
+     */
+    private suspend fun executeOsReadFile(args: JsonObject): JsonElement {
+        val pathStr = args["path"]?.jsonPrimitive?.content
+        if (pathStr.isNullOrEmpty()) {
+            return createToolResult(false, error = "Path is required")
+        }
+
+        val file = java.io.File(pathStr)
+        var content = ""
+        var source = "Standard API"
+
+        // --- 阶段 1: 尝试 Java 读取 ---
+        if (file.exists() && file.canRead()) {
+            try {
+                content = file.readText()
+            } catch (e: Exception) {
+                // 读取异常，准备进入 Root 尝试
+            }
+        }
+
+        // --- 阶段 2: 如果内容为空且无法读取，尝试 Root cat ---
+        if (content.isEmpty()) {
+            val output = ShellUtils.execCommand("cat \"$pathStr\"", isRoot = true)
+            if (output.isSuccess) {
+                content = output.successMsg
+                source = "Root Access"
+            } else {
+                // 彻底失败
+                return createToolResult(false, error = "❌ 读取文件失败: $pathStr\nPermission denied & Root failed.")
+            }
+        }
+
+        // --- 阶段 3: 大文件截断保护 (关键！) ---
+        // 防止读取巨大的 .so 或 .log 文件导致 OOM
+        val limit = 50000 // 50KB 限制
+        val truncatedNote = if (content.length > limit) {
+            content = content.take(limit)
+            "\n\n[⚠️ SYSTEM: 文件过大，已截断显示前 50KB 内容]"
+        } else ""
+
+        return createToolResult(true, output = "($source)\n$content$truncatedNote")
+    }
+
+    /**
+     * 执行 r2_analyze_target 工具
+     */
+    private suspend fun executeAnalyzeTarget(args: JsonObject): JsonElement {
+        val strategy = args["strategy"]?.jsonPrimitive?.content ?: "basic"
+        val address = args["address"]?.jsonPrimitive?.content
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        // 构造 R2 命令
+        // 如果有地址，就在命令后面加 @地址，否则全局执行
+        val addrSuffix = if (!address.isNullOrEmpty()) " @ $address" else ""
+
+        val cmd = when (strategy) {
+            "basic" -> "aa"
+            "blocks" -> "aab$addrSuffix"
+            "calls" -> "aac$addrSuffix"
+            "refs" -> "aar$addrSuffix" // aar 通常是全局的，但也可以指定范围
+            "pointers" -> "aad$addrSuffix"
+            "full" -> "aaa" // 慎用
+            else -> "aa"
+        }
+
+        logInfo("执行智能分析策略: $strategy (命令: $cmd, 会话: ${sessionId.take(16)})")
+
+        // 1. 执行分析命令
+        val startTime = System.currentTimeMillis()
+        val analysisOutput = R2Core.executeCommand(session.corePtr, cmd)
+        val duration = System.currentTimeMillis() - startTime
+        logInfo("分析完成，耗时 ${duration}ms")
+
+        // 2. 获取分析结果反馈 (让 AI 知道发生了什么变化)
+        // 统计当前函数数量 (afl~?) 和代码覆盖大小
+        val funcCount = R2Core.executeCommand(session.corePtr, "afl~?").trim()
+        val codeSize = R2Core.executeCommand(session.corePtr, "?v \$SS").trim()
+
+        // 3. 构造返回消息
+        val resultMsg = StringBuilder()
+        resultMsg.append("✅ 分析策略 '$strategy' 执行完毕 (Cmd: $cmd, 耗时: ${duration}ms)。\n")
+        resultMsg.append("📊 当前状态：\n")
+        resultMsg.append("- 已识别函数数: $funcCount\n")
+        resultMsg.append("- 代码段大小: $codeSize bytes\n")
+
+        when (strategy) {
+            "calls" -> resultMsg.append("💡 提示：如果函数数量增加了，说明发现了新的子函数。")
+            "pointers" -> resultMsg.append("💡 提示：请检查数据段是否识别出了新的 xref。")
+            "blocks" -> resultMsg.append("💡 提示：函数基本块结构已优化，可能修复了截断问题。")
+            "refs" -> resultMsg.append("💡 提示：数据引用已分析，可用于查找字符串和全局变量。")
+            "full" -> resultMsg.append("⚠️ 注意：全量分析已完成，可能耗时较长。")
+            else -> resultMsg.append("💡 提示：基础分析已完成，识别了符号和入口点。")
+        }
+
+        if (analysisOutput.isNotBlank()) {
+            resultMsg.append("\n\n=== 分析输出 ===\n$analysisOutput")
+        }
+
+        return createToolResult(true, output = resultMsg.toString())
     }
 }
