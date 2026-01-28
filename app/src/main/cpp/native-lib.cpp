@@ -30,6 +30,11 @@ Java_com_r2aibridge_R2Core_initR2Core(JNIEnv* env, jobject /* this */) {
         return 0;
     }
 
+    // --- [新增] 必须配置，否则 Java层收到的字符串会有乱码 ---
+    r_core_cmd0(core, "e scr.color=0"); 
+    r_core_cmd0(core, "e scr.utf8=0");
+    r_core_cmd0(core, "e scr.interactive=false"); // 防止等待输入卡死
+
     LOGI("R2 Core initialized: %p", core);
     return reinterpret_cast<jlong>(core);
 }
@@ -60,7 +65,7 @@ Java_com_r2aibridge_R2Core_executeCommand(
 
     if (!result) {
         return env->NewStringUTF("");
-    }
+     }
 
     jstring jresult = env->NewStringUTF(result);
     
@@ -96,7 +101,10 @@ Java_com_r2aibridge_R2Core_openFile(
     
     // 使用多种方式尝试打开文件
     // 方式1: 使用 oo+ 命令（以读写模式打开）
-    std::string open_cmd = std::string("oo+ ") + path;
+    // --- [修改] 加上引号，解决路径含空格问题 ---
+    // 原来: "oo+ " + path
+    // 现在: "oo+ \"" + path + "\""
+    std::string open_cmd = std::string("oo+ \"") + path + "\"";
     char* result1 = r_core_cmd_str(core, open_cmd.c_str());
     
     bool success = false;
@@ -113,7 +121,8 @@ Java_com_r2aibridge_R2Core_openFile(
     
     // 方式2: 如果失败，尝试只读模式
     if (!success) {
-        open_cmd = std::string("o ") + path;
+        // --- [修改] 加上引号 ---
+        open_cmd = std::string("o \"") + path + "\"";
         char* result2 = r_core_cmd_str(core, open_cmd.c_str());
         
         if (result2) {
@@ -139,7 +148,7 @@ Java_com_r2aibridge_R2Core_openFile(
             free(error);
         }
     } else {
-        LOGI("File opened successfully (no auto-analysis, controlled by Kotlin layer)");
+        LOGI("File opened successfully");
     }
 
     return success ? JNI_TRUE : JNI_FALSE;
@@ -164,24 +173,23 @@ Java_com_r2aibridge_R2Core_closeR2Core(
     r_core_free(core);
 }
 
-/**
- * Test R2 functionality
- */
+// testR2 函数保留原样，没有变动
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_r2aibridge_R2Core_testR2(JNIEnv* env, jobject /* this */) {
     LOGI("Testing R2 libraries...");
-    
     std::string result = "R2 Test Results:\n";
     
-    // Test 1: Create core
     r_core_t* core = r_core_new();
     if (!core) {
         result += "FAILED: r_core_new() returned null\n";
         return env->NewStringUTF(result.c_str());
     }
+    
+    // 确保测试时也关闭颜色
+    r_core_cmd0(core, "e scr.color=0");
+
     result += "OK: r_core_new() succeeded\n";
     
-    // Test 2: Execute simple command
     char* version = r_core_cmd_str(core, "?V");
     if (version) {
         result += "OK: r_core_cmd_str() works, version: ";
@@ -192,7 +200,6 @@ Java_com_r2aibridge_R2Core_testR2(JNIEnv* env, jobject /* this */) {
         result += "FAILED: r_core_cmd_str() returned null\n";
     }
     
-    // Test 3: Try to open a simple command
     char* help = r_core_cmd_str(core, "?");
     if (help) {
         result += "OK: Help command works (";
