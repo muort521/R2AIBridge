@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.r2aibridge.mcp.MCPServer
 import com.r2aibridge.service.R2ServiceForeground
 import com.r2aibridge.ui.theme.R2AIBridgeTheme
 import java.net.Inet4Address
@@ -107,6 +108,9 @@ class MainActivity : ComponentActivity() {
         try {
             R2Core.loadLibraries(this)
             Log.i("MainActivity", "✅ R2 libraries loaded via smart loader")
+            
+            // 🧹 清理所有 Root 复制的副本文件
+            MCPServer.cleanupRootCopies()
         } catch (e: Exception) {
             Log.e("MainActivity", "❌ Failed to load R2 libraries", e)
             Toast.makeText(this, "R2库加载失败：${e.message}", Toast.LENGTH_LONG).show()

@@ -10,12 +10,13 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.*
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
 object MCPServer {
     
-    private const val TAG = "MCPServer"
+    private const val TAG = "R2AI"
     
     private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
     
@@ -84,6 +85,101 @@ object MCPServer {
         }
 
         return output
+    }
+
+    /**
+     * 检查设备是否有 Root 权限
+     */
+    private fun hasRootPermission(): Boolean {
+        return try {
+            logInfo("检查 Root 权限...")
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "echo test"))
+            val exitCode = process.waitFor()
+            val hasPermission = exitCode == 0
+            logInfo("Root 权限检查结果: $hasPermission (exitCode: $exitCode)")
+            hasPermission
+        } catch (e: Exception) {
+            logError("Root 权限检查异常", e.message)
+            false
+        }
+    }
+
+    /**
+     * Root 复制逻辑：尝试打开文件 -> 失败 -> 强行 Root 复制到缓存 777 -> 打开副本
+     * @param originalPath 原始文件路径
+     * @return 成功返回副本路径，失败返回 null
+     */
+    private fun tryRootCopy(originalPath: String): String? {
+        // 先检查是否有 Root 权限
+        if (!hasRootPermission()) {
+            logError("设备未获得 Root 权限，无法执行 Root 复制", "文件: $originalPath")
+            return null
+        }
+
+        try {
+            val originalFile = File(originalPath)
+            if (!originalFile.exists()) {
+                logError("原始文件不存在，无法复制", originalPath)
+                return null
+            }
+
+            // 创建缓存目录
+            val cacheDir = File(System.getProperty("java.io.tmpdir"), "r2_root_cache")
+            if (!cacheDir.exists()) {
+                cacheDir.mkdirs()
+            }
+
+            // 生成副本路径
+            val fileName = originalFile.name
+            val copyPath = File(cacheDir, "${System.currentTimeMillis()}_${fileName}").absolutePath
+
+            logInfo("尝试 Root 复制文件: $originalPath -> $copyPath")
+
+            // 执行 Root 复制命令
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "cp '$originalPath' '$copyPath' && chmod 777 '$copyPath'"))
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0) {
+                // 验证副本是否存在且可读
+                val copyFile = File(copyPath)
+                if (copyFile.exists() && copyFile.canRead()) {
+                    logInfo("Root 复制成功: $copyPath")
+                    return copyPath
+                } else {
+                    logError("Root 复制后文件不存在或不可读", copyPath)
+                }
+            } else {
+                val error = process.errorStream.bufferedReader().readText()
+                logError("Root 复制失败", "exitCode=$exitCode, error=$error")
+            }
+        } catch (e: Exception) {
+            logError("Root 复制异常", e.message)
+        }
+
+        return null
+    }
+
+    /**
+     * 清理所有 Root 复制的副本文件
+     */
+    fun cleanupRootCopies() {
+        try {
+            val cacheDir = File(System.getProperty("java.io.tmpdir"), "r2_root_cache")
+            if (cacheDir.exists() && cacheDir.isDirectory) {
+                val files = cacheDir.listFiles()
+                if (files != null) {
+                    var deletedCount = 0
+                    for (file in files) {
+                        if (file.isFile && file.delete()) {
+                            deletedCount++
+                        }
+                    }
+                    logInfo("已清理 $deletedCount 个 Root 复制副本文件")
+                }
+            }
+        } catch (e: Exception) {
+            logError("清理 Root 复制副本失败", e.message)
+        }
     }
 
     fun configure(app: Application, onLogEvent: (String) -> Unit) {
@@ -172,6 +268,7 @@ object MCPServer {
 
                     val result = when (request.method) {
                         "initialize" -> handleInitialize(request.params)
+                        "ping" -> handlePing()
                         "tools/list" -> handleToolsList()
                         "tools/call" -> {
                             val toolName = request.params?.get("name")?.jsonPrimitive?.content ?: "unknown"
@@ -265,6 +362,17 @@ object MCPServer {
         }
         
         logInfo("🚀 MCP 服务器已启动")
+    }
+
+    /**
+     * 处理 ping 方法 - 连接测试
+     */
+    private fun handlePing(): JsonElement {
+        logInfo("收到 ping 请求")
+        return buildJsonObject {
+            put("message", "pong")
+            put("timestamp", System.currentTimeMillis())
+        }
     }
 
     /**
@@ -455,8 +563,8 @@ object MCPServer {
 
         return try {
             val result = when (toolName) {
-                "r2_open_file" -> executeOpenFile(arguments)
-                "r2_analyze_file" -> executeAnalyzeFile(arguments)
+                "r2_open_file" -> executeOpenFile(arguments, onLogEvent)
+                "r2_analyze_file" -> executeAnalyzeFile(arguments, onLogEvent)
                 "r2_run_command" -> executeCommand(arguments)
                 "r2_list_functions" -> executeListFunctions(arguments)
                 "r2_list_strings" -> executeListStrings(arguments)
@@ -533,7 +641,7 @@ object MCPServer {
         }
     }
 
-    private suspend fun executeOpenFile(args: JsonObject): JsonElement {
+    private suspend fun executeOpenFile(args: JsonObject, onLogEvent: (String) -> Unit): JsonElement {
         val filePath = args["file_path"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing file_path")
         
@@ -543,13 +651,28 @@ object MCPServer {
         // 验证文件是否存在
         val file = java.io.File(filePath)
         if (!file.exists()) {
-            logError("文件不存在", filePath)
-            return createToolResult(false, error = "File does not exist: $filePath")
+            logInfo("文件不存在或无权限访问，尝试 Root 复制: $filePath")
+            // 即使文件不存在，也尝试 Root 复制（可能是权限问题）
+            val copyPath = tryRootCopy(filePath)
+            if (copyPath != null) {
+                logInfo("Root 复制成功，使用副本继续: $copyPath")
+                // 使用副本文件
+                val copyFile = java.io.File(copyPath)
+                if (!copyFile.exists()) {
+                    logError("Root 复制后副本文件不存在", copyPath)
+                    return createToolResult(false, error = "Failed to create accessible copy of file: $filePath")
+                }
+                // 继续使用副本文件进行后续操作
+                return executeOpenFileWithFile(copyFile, copyPath, autoAnalyze, onLogEvent)
+            } else {
+                logError("文件不存在且 Root 复制失败", filePath)
+                return createToolResult(false, error = "File does not exist or no permission to access: $filePath\n\nPossible solutions:\n• Check if the file path is correct\n• For Android APK analysis, try: classes.dex, classes2.dex, classes3.dex, etc.\n• For native libraries, common extensions: .so, .dll, .dylib\n• For executables: .elf, .exe, .bin\n• Ensure device is rooted for accessing system files\n• Check app permissions for the file location")
+            }
         }
-        if (!file.canRead()) {
-            logError("文件不可读", filePath)
-            return createToolResult(false, error = "Cannot read file: $filePath")
-        }
+        
+        // 注意：即使 file.canRead() 返回 false，我们也继续尝试 R2Core.openFile
+        // 因为在 Android 中，很多系统文件普通应用无法读取，但 R2 可能可以通过其他方式访问
+        // 或者我们可以通过 Root 复制来解决权限问题
         
         // session_id 可选，如果没有则自动创建
         var sessionId = args["session_id"]?.jsonPrimitive?.content
@@ -565,14 +688,33 @@ object MCPServer {
             
             val opened = R2Core.openFile(corePtr, filePath)
             if (!opened) {
-                R2Core.closeR2Core(corePtr)
-                logError("打开文件失败", filePath)
-                return createToolResult(false, error = "Failed to open file: $filePath (r2_core_file_open returned false)")
+                logInfo("文件打开失败，尝试 Root 复制: $filePath")
+                // 尝试 Root 复制
+                val copyPath = tryRootCopy(filePath)
+                if (copyPath != null) {
+                    logInfo("使用 Root 复制的副本重试: $copyPath")
+                    val copyOpened = R2Core.openFile(corePtr, copyPath)
+                    if (copyOpened) {
+                        logInfo("Root 复制副本打开成功")
+                        // 更新会话路径为副本路径
+                        sessionId = R2SessionManager.createSession(copyPath, corePtr)
+                        session = R2SessionManager.getSession(sessionId)!!
+                        logInfo("创建新会话 (使用副本): $sessionId (原始文件: ${file.absolutePath}, 副本: $copyPath)")
+                    } else {
+                        R2Core.closeR2Core(corePtr)
+                        logError("Root 复制副本也无法打开", copyPath)
+                        return createToolResult(false, error = "Failed to open file: $filePath (even after root copy to $copyPath)")
+                    }
+                } else {
+                    R2Core.closeR2Core(corePtr)
+                    logError("打开文件失败且 Root 复制失败", filePath)
+                    return createToolResult(false, error = "Failed to open file: $filePath\n\nPossible solutions:\n1. Check if file exists and is readable\n2. Ensure device is rooted and has root permission\n3. Try using a different file path\n4. Check if file is a valid binary format (ELF, PE, Mach-O, etc.)")
+                }
+            } else {
+                sessionId = R2SessionManager.createSession(filePath, corePtr)
+                session = R2SessionManager.getSession(sessionId)!!
+                logInfo("创建新会话: $sessionId (文件: ${file.absolutePath})")
             }
-            
-            sessionId = R2SessionManager.createSession(filePath, corePtr)
-            session = R2SessionManager.getSession(sessionId)!!
-            logInfo("创建新会话: $sessionId (文件: ${file.absolutePath})")
         } else {
             logInfo("使用现有会话: $sessionId (文件: $filePath)")
         }
@@ -594,20 +736,86 @@ object MCPServer {
         return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
     }
 
-    private suspend fun executeAnalyzeFile(args: JsonObject): JsonElement {
+    /**
+     * 辅助函数：使用指定的文件对象执行打开操作
+     */
+    private suspend fun executeOpenFileWithFile(file: java.io.File, filePath: String, autoAnalyze: Boolean, onLogEvent: (String) -> Unit): JsonElement {
+        // 注意：即使 file.canRead() 返回 false，我们也继续尝试 R2Core.openFile
+        // 因为在 Android 中，很多系统文件普通应用无法读取，但 R2 可能可以通过其他方式访问
+        // 或者我们可以通过 Root 复制来解决权限问题
+        
+        // session_id 可选，如果没有则自动创建
+        var sessionId: String
+        var session = R2SessionManager.getSessionByFilePath(filePath)
+        
+        if (session == null) {
+            // 创建新会话
+            val corePtr = R2Core.initR2Core()
+            if (corePtr == 0L) {
+                logError("R2 Core 初始化失败")
+                return createToolResult(false, error = "Failed to initialize R2 core")
+            }
+            
+            val opened = R2Core.openFile(corePtr, filePath)
+            if (!opened) {
+                R2Core.closeR2Core(corePtr)
+                logError("打开文件失败", filePath)
+                return createToolResult(false, error = "Failed to open file: $filePath")
+            }
+            
+            sessionId = R2SessionManager.createSession(filePath, corePtr)
+            session = R2SessionManager.getSession(sessionId)!!
+            logInfo("创建新会话: $sessionId (文件: ${file.absolutePath})")
+        } else {
+            sessionId = session.sessionId
+            logInfo("使用现有会话: $sessionId (文件: $filePath)")
+        }
+
+        // 执行分析（如果启用）
+        val analysisResult = if (autoAnalyze) {
+            logInfo("执行基础分析 (aa)...")
+            val startTime = System.currentTimeMillis()
+            val output = R2Core.executeCommand(session.corePtr, "aa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("分析完成，耗时 ${duration}ms")
+            "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
+        } else {
+            "\n[跳过自动分析]"
+        }
+
+        val info = R2Core.executeCommand(session.corePtr, "i")
+        
+        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
+    }
+
+    private suspend fun executeAnalyzeFile(args: JsonObject, onLogEvent: (String) -> Unit): JsonElement {
         val filePath = args["file_path"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing file_path")
         
         // 验证文件是否存在
         val file = java.io.File(filePath)
         if (!file.exists()) {
-            logError("文件不存在", filePath)
-            return createToolResult(false, error = "File does not exist: $filePath")
+            logInfo("文件不存在或无权限访问，尝试 Root 复制: $filePath")
+            // 即使文件不存在，也尝试 Root 复制（可能是权限问题）
+            val copyPath = tryRootCopy(filePath)
+            if (copyPath != null) {
+                logInfo("Root 复制成功，使用副本继续: $copyPath")
+                // 使用副本文件
+                val copyFile = java.io.File(copyPath)
+                if (!copyFile.exists()) {
+                    logError("Root 复制后副本文件不存在", copyPath)
+                    return createToolResult(false, error = "Failed to create accessible copy of file: $filePath")
+                }
+                // 继续使用副本文件进行后续操作
+                return executeAnalyzeFileWithFile(copyFile, copyPath, onLogEvent)
+            } else {
+                logError("文件不存在且 Root 复制失败", filePath)
+                return createToolResult(false, error = "File does not exist or no permission to access: $filePath\n\nPossible solutions:\n• Check if the file path is correct\n• For Android APK analysis, try: classes.dex, classes2.dex, classes3.dex, etc.\n• For native libraries, common extensions: .so, .dll, .dylib\n• For executables: .elf, .exe, .bin\n• Ensure device is rooted for accessing system files\n• Check app permissions for the file location")
+            }
         }
-        if (!file.canRead()) {
-            logError("文件不可读", filePath)
-            return createToolResult(false, error = "Cannot read file: $filePath (permission denied)")
-        }
+        
+        // 注意：即使 file.canRead() 返回 false，我们也继续尝试分析
+        // 因为在 Android 中，很多系统文件普通应用无法读取，但可以通过 Root 复制解决
 
         logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
 
@@ -638,7 +846,36 @@ object MCPServer {
             // 打开文件
             val opened = R2Core.openFile(corePtr, file.absolutePath)
             if (!opened) {
-                logError("打开文件失败", file.absolutePath)
+                // 尝试 Root 复制
+                val copyPath = tryRootCopy(file.absolutePath)
+                if (copyPath != null) {
+                    logInfo("使用 Root 复制的副本重试分析: $copyPath")
+                    val copyOpened = R2Core.openFile(corePtr, copyPath)
+                    if (copyOpened) {
+                        logInfo("Root 复制副本打开成功，开始深度分析")
+                        // 更新文件路径为副本路径
+                        val copyFile = File(copyPath)
+                        val sessionId = R2SessionManager.createSession(copyPath, corePtr)
+
+                        // 执行深度分析
+                        logInfo("执行深度分析 (aaa)...")
+                        val startTime = System.currentTimeMillis()
+                        R2Core.executeCommand(corePtr, "aaa")
+                        val duration = System.currentTimeMillis() - startTime
+                        logInfo("深度分析完成，耗时 ${duration}ms")
+
+                        // 获取文件信息
+                        val info = R2Core.executeCommand(corePtr, "i")
+                        val funcs = R2Core.executeCommand(corePtr, "afl~?")
+
+                        logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
+                        return createToolResult(true, output = "Session: $sessionId\n\n[使用 Root 复制副本]\nOriginal: ${file.absolutePath}\nCopy: $copyPath\nSize: ${copyFile.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+                    } else {
+                        logError("Root 复制副本也无法打开", copyPath)
+                    }
+                }
+
+                logError("打开文件失败且 Root 复制失败", file.absolutePath)
                 // 尝试获取错误详情
                 val fileList = try {
                     R2Core.executeCommand(corePtr, "o")
@@ -659,11 +896,75 @@ object MCPServer {
                            "  - Size: ${file.length()} bytes\n\n" +
                            "R2 opened files: $fileList\n\n" +
                            "R2 info: $coreInfo\n\n" +
-                           "Suggestion: Check if file is a valid binary format (ELF, PE, Mach-O, etc.)")
+                           "Root copy attempted but failed. Check if device is rooted and su command is available.")
             }
 
             // 创建会话
             val sessionId = R2SessionManager.createSession(file.absolutePath, corePtr)
+
+            // 执行深度分析
+            logInfo("执行深度分析 (aaa)...")
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("深度分析完成，耗时 ${duration}ms")
+
+            // 获取文件信息
+            val info = R2Core.executeCommand(corePtr, "i")
+            val funcs = R2Core.executeCommand(corePtr, "afl~?")
+
+            logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
+            return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        } catch (e: Exception) {
+            logError("分析过程异常", e.message)
+            R2Core.closeR2Core(corePtr)
+            return createToolResult(false, error = "Exception during analysis: ${e.message}")
+        }
+    }
+
+    /**
+     * 辅助函数：使用指定的文件对象执行分析操作
+     */
+    private suspend fun executeAnalyzeFileWithFile(file: java.io.File, filePath: String, onLogEvent: (String) -> Unit): JsonElement {
+        // 注意：即使 file.canRead() 返回 false，我们也继续尝试分析
+        // 因为在 Android 中，很多系统文件普通应用无法读取，但可以通过 Root 复制解决
+
+        logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
+
+        // 检查是否已有会话打开该文件
+        val existingSession = R2SessionManager.getSessionByFilePath(file.absolutePath)
+        if (existingSession != null) {
+            logInfo("文件已被会话 ${existingSession.sessionId} 打开，执行深度分析")
+            
+            // 在现有会话中执行深度分析
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(existingSession.corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            
+            val info = R2Core.executeCommand(existingSession.corePtr, "i")
+            val funcs = R2Core.executeCommand(existingSession.corePtr, "afl~?")
+            
+            return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[复用现有会话]\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        }
+
+        // 创建 R2 Core 实例
+        val corePtr = R2Core.initR2Core()
+        if (corePtr == 0L) {
+            logError("R2 Core 初始化失败")
+            return createToolResult(false, error = "Failed to initialize R2 core (r_core_new returned null)")
+        }
+
+        try {
+            // 打开文件
+            val opened = R2Core.openFile(corePtr, filePath)
+            if (!opened) {
+                R2Core.closeR2Core(corePtr)
+                logError("打开文件失败", filePath)
+                return createToolResult(false, error = "Failed to open file: $filePath")
+            }
+
+            // 创建会话
+            val sessionId = R2SessionManager.createSession(filePath, corePtr)
 
             // 执行深度分析
             logInfo("执行深度分析 (aaa)...")

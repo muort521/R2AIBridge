@@ -8,7 +8,7 @@ import java.io.File
  * JNI wrapper for Radare2 core functionality
  */
 object R2Core {
-    private const val TAG = "R2Core"
+    private const val TAG = "R2AI"
     private var isInitialized = false
     
     /**

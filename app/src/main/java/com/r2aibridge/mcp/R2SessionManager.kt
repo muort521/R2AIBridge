@@ -10,7 +10,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 object R2SessionManager {
     
-    private const val TAG = "R2SessionManager"
+    private const val TAG = "R2AI"
     
     /**
      * 会话数据类：存储文件路径和 R2 Core 指针
