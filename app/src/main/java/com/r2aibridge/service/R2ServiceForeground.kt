@@ -10,8 +10,9 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.util.Log
+import android.view.WindowManager
+import android.view.View
 import androidx.core.app.NotificationCompat
-import com.r2aibridge.MainActivity
 import com.r2aibridge.R
 import com.r2aibridge.mcp.MCPServer
 import io.ktor.server.engine.*
@@ -20,17 +21,19 @@ import kotlinx.coroutines.*
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
-class R2ServiceForeground : Service() {
 
+class R2ServiceForeground : Service() {
+    private lateinit var windowManager: WindowManager
+    private lateinit var floatingView: View
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var ktorServer: EmbeddedServer<*, *>? = null
     private var currentCommand: String = "待机中"
-    
+
     companion object {
         private const val CHANNEL_ID = "R2_SERVICE_CHANNEL"
         private const val NOTIFICATION_ID = 1
         private const val PORT = 5050
-        
+
         const val ACTION_STOP = "com.r2aibridge.ACTION_STOP"
         const val ACTION_LOG_EVENT = "com.r2aibridge.ACTION_LOG_EVENT"
         const val EXTRA_LOG_MESSAGE = "log_message"
@@ -40,6 +43,7 @@ class R2ServiceForeground : Service() {
         super.onCreate()
         createNotificationChannel()
         startForeground(NOTIFICATION_ID, createNotification())
+        initFloatingWindow()
         startKtorServer()
     }
 
@@ -48,7 +52,6 @@ class R2ServiceForeground : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 Log.d("R2Service", "Received ACTION_STOP, stopping foreground service")
-                // 更新通知状态，但不重复发送日志广播，直接发送 ACTION_STOP 供 UI 更新
                 updateCurrentCommand("⛔ 服务已停止")
                 try {
                     val stopIntentBroadcast = Intent(ACTION_STOP).apply {
@@ -58,7 +61,7 @@ class R2ServiceForeground : Service() {
                 } catch (e: Exception) {
                     Log.e("R2Service", "Failed to broadcast ACTION_STOP", e)
                 }
-                    stopForeground(STOP_FOREGROUND_REMOVE)
+                stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -72,6 +75,36 @@ class R2ServiceForeground : Service() {
         super.onDestroy()
         ktorServer?.stop(1000, 2000)
         serviceScope.cancel()
+        if (::floatingView.isInitialized) {
+            windowManager.removeView(floatingView)
+        }
+    }
+
+    private fun initFloatingWindow() {
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        floatingView = View(this)
+
+        val params = WindowManager.LayoutParams(
+            1, 1,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            android.graphics.PixelFormat.TRANSPARENT
+        )
+
+        params.gravity = android.view.Gravity.TOP or android.view.Gravity.START
+        params.x = 0
+        params.y = 0
+
+        try {
+            windowManager.addView(floatingView, params)
+        } catch (e: Exception) {
+            Log.e("R2Service", "Failed to add floating window", e)
+        }
     }
 
     private fun createNotificationChannel() {
@@ -97,7 +130,7 @@ class R2ServiceForeground : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val mainIntent = Intent(this, MainActivity::class.java)
+        val mainIntent = Intent(this, com.r2aibridge.MainActivity::class.java)
         val mainPendingIntent = PendingIntent.getActivity(
             this, 0, mainIntent,
             PendingIntent.FLAG_IMMUTABLE
