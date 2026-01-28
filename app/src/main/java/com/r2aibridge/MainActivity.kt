@@ -45,19 +45,26 @@ class MainActivity : ComponentActivity() {
     private val logEventReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             Log.d("MainActivity", "BroadcastReceiver: 收到广播 action=${intent?.action}")
-            if (intent?.action == R2ServiceForeground.ACTION_LOG_EVENT) {
-                val message = intent.getStringExtra(R2ServiceForeground.EXTRA_LOG_MESSAGE)
-                Log.d("MainActivity", "BroadcastReceiver: 收到日志消息=$message")
-                message?.let { logMessage ->
-                    Log.d("MainActivity", "BroadcastReceiver: 调用回调 callback=${logEventCallback != null}")
-                    // 通过回调传递给Compose
-                    logEventCallback?.invoke(logMessage)
+            when (intent?.action) {
+                R2ServiceForeground.ACTION_LOG_EVENT -> {
+                    val message = intent.getStringExtra(R2ServiceForeground.EXTRA_LOG_MESSAGE)
+                    Log.d("MainActivity", "BroadcastReceiver: 收到日志消息=$message")
+                    message?.let { logMessage ->
+                        Log.d("MainActivity", "BroadcastReceiver: 调用回调 callback=${logEventCallback != null}")
+                        // 通过回调传递给Compose
+                        logEventCallback?.invoke(logMessage)
+                    }
+                }
+                R2ServiceForeground.ACTION_STOP -> {
+                    Log.d("MainActivity", "BroadcastReceiver: 收到 ACTION_STOP，触发停止回调")
+                    stopEventCallback?.invoke()
                 }
             }
         }
     }
     
     private var logEventCallback: ((String) -> Unit)? = null
+    private var stopEventCallback: (() -> Unit)? = null
 
     private val manageAllFilesLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -108,8 +115,11 @@ class MainActivity : ComponentActivity() {
         // 启用边到边显示和透明状态栏
         WindowCompat.setDecorFitsSystemWindows(window, false)
         
-        // 注册日志事件接收器
-        val filter = IntentFilter(R2ServiceForeground.ACTION_LOG_EVENT)
+        // 注册日志事件接收器，并同时监听服务停止动作，便于通知栏停止与主界面按钮行为一致
+        val filter = IntentFilter().apply {
+            addAction(R2ServiceForeground.ACTION_LOG_EVENT)
+            addAction(R2ServiceForeground.ACTION_STOP)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(logEventReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
@@ -128,7 +138,8 @@ class MainActivity : ComponentActivity() {
                         onStartService = { startR2Service() },
                         onStopService = { stopR2Service() },
                         getWifiIpAddress = { getWifiIpAddress() },
-                        onLogEventCallbackSet = { callback -> logEventCallback = callback }
+                        onLogEventCallbackSet = { callback -> logEventCallback = callback },
+                        onStopEventCallbackSet = { callback -> stopEventCallback = callback }
                     )
                 }
             }
@@ -239,7 +250,8 @@ fun MainScreen(
     onStartService: () -> Unit,
     onStopService: () -> Unit,
     getWifiIpAddress: () -> String,
-    onLogEventCallbackSet: ((String) -> Unit) -> Unit
+    onLogEventCallbackSet: ((String) -> Unit) -> Unit,
+    onStopEventCallbackSet: (() -> Unit) -> Unit
 ) {
     var isServiceRunning by remember { mutableStateOf(true) } // 默认启动
     val commandHistory = remember { mutableStateListOf<String>() }
@@ -247,12 +259,18 @@ fun MainScreen(
     val view = LocalView.current
     
     // 设置日志事件回调
-    LaunchedEffect(Unit) {
+        LaunchedEffect(Unit) {
         Log.d("MainActivity", "LaunchedEffect: 设置日志回调")
         onLogEventCallbackSet { logMessage ->
             Log.d("MainActivity", "Callback: 收到日志=$logMessage")
             val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
             commandHistory.add(0, "[$timestamp] $logMessage")
+        }
+        // 注册停止事件回调，通知栏停止时通过此回调更新 UI
+        onStopEventCallbackSet {
+            isServiceRunning = false
+            val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
+            commandHistory.add(0, "[$timestamp] ⛔ 服务已停止")
         }
         // 添加初始消息
         val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())

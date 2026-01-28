@@ -44,8 +44,21 @@ class R2ServiceForeground : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.d("R2Service", "onStartCommand: action=${intent?.action}")
         when (intent?.action) {
             ACTION_STOP -> {
+                Log.d("R2Service", "Received ACTION_STOP, stopping foreground service")
+                // 更新通知状态，但不重复发送日志广播，直接发送 ACTION_STOP 供 UI 更新
+                updateCurrentCommand("⛔ 服务已停止")
+                try {
+                    val stopIntentBroadcast = Intent(ACTION_STOP).apply {
+                        setPackage(packageName)
+                    }
+                    sendBroadcast(stopIntentBroadcast)
+                } catch (e: Exception) {
+                    Log.e("R2Service", "Failed to broadcast ACTION_STOP", e)
+                }
+                    stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -80,8 +93,8 @@ class R2ServiceForeground : Service() {
             action = ACTION_STOP
         }
         val stopPendingIntent = PendingIntent.getService(
-            this, 0, stopIntent,
-            PendingIntent.FLAG_IMMUTABLE
+            this, 1, stopIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val mainIntent = Intent(this, MainActivity::class.java)
