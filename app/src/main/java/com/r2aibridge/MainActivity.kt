@@ -18,6 +18,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
@@ -124,11 +125,7 @@ class MainActivity : ComponentActivity() {
             addAction(R2ServiceForeground.ACTION_LOG_EVENT)
             addAction(R2ServiceForeground.ACTION_STOP)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(logEventReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            registerReceiver(logEventReceiver, filter)
-        }
+        ContextCompat.registerReceiver(this, logEventReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         
         requestRequiredPermissions()
         
@@ -484,7 +481,7 @@ fun MainScreen(
                 modifier = Modifier.padding(16.dp)
             ) {
                 Text(
-                    text = "可用的 MCP 工具 (14个)",
+                    text = "可用的 MCP 工具 (15个)",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(bottom = 8.dp)
                 )
@@ -497,6 +494,7 @@ fun MainScreen(
                     "📋 r2_list_functions - 列出函数列表",
                     "📝 r2_list_strings - 列出字符串 (逆向第一步)",
                     "🔗 r2_get_xrefs - 获取交叉引用 (逻辑追踪)",
+                    "🔗 r2_manage_xrefs - 管理交叉引用 (手动修复)",
                     "ℹ️ r2_get_info - 获取文件详细信息",
                     "🔍 r2_decompile_function - 反编译函数",
                     "📜 r2_disassemble - 反汇编代码",

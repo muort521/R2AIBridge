@@ -525,6 +525,24 @@ object MCPServer {
                 listOf("strategy")
             ),
             createToolSchema(
+                "r2_manage_xrefs",
+                "🔗 [交叉引用管理] 管理代码和数据的交叉引用(Xrefs)。用于查询'谁调用了函数'、'字符串在哪里被使用'，或手动修复缺失的引用关系。\n" +
+                "操作类型说明：\n" +
+                "- 'list_to' (axt): 查询引用了目标地址的位置（例如：谁调用了这个函数？）。\n" +
+                "- 'list_from' (axf): 查询目标地址引用了哪些位置（例如：这个函数里调用了谁？）。\n" +
+                "- 'add_code' (axc): 手动添加一个代码引用（修复未识别的跳转）。\n" +
+                "- 'add_call' (axC): 手动添加一个函数调用引用。\n" +
+                "- 'add_data' (axd): 手动添加一个数据引用（如指针指向）。\n" +
+                "- 'add_string' (axs): 手动添加一个字符串引用。\n" +
+                "- 'remove_all' (ax-): 删除指定地址的所有引用（修复错误的分析）。",
+                mapOf(
+                    "action" to mapOf("type" to "string", "enum" to listOf("list_to", "list_from", "add_code", "add_call", "add_data", "add_string", "remove_all"), "description" to "要执行的操作类型"),
+                    "target_address" to mapOf("type" to "string", "description" to "目标地址或符号（例如 '0x00401000', 'sym.main', 'entry0'）。对于添加操作，这是引用指向的目标。"),
+                    "source_address" to mapOf("type" to "string", "description" to "源地址（可选）。对于添加操作(add_*)，这是发出引用的位置。如果不填，默认为当前光标位置。")
+                ),
+                listOf("action", "target_address")
+            ),
+            createToolSchema(
                 "os_list_dir",
                 "📁 [文件系统] 列出指定文件夹下的内容。如果遇到权限拒绝（如 /data/data），会自动尝试使用 Root 权限列出。输出包含文件类型（DIR/FILE）和大小。",
                 mapOf(
@@ -608,6 +626,7 @@ object MCPServer {
                 "r2_test" -> executeTestR2(arguments)
                 "r2_close_session" -> executeCloseSession(arguments)
                 "r2_analyze_target" -> executeAnalyzeTarget(arguments)
+                "r2_manage_xrefs" -> executeManageXrefs(arguments)
                 "os_list_dir" -> executeOsListDir(arguments)
                 "os_read_file" -> executeOsReadFile(arguments)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
@@ -1401,5 +1420,118 @@ object MCPServer {
         }
 
         return createToolResult(true, output = resultMsg.toString())
+    }
+
+    /**
+     * 执行 r2_manage_xrefs 工具
+     */
+    private suspend fun executeManageXrefs(args: JsonObject): JsonElement {
+        val action = args["action"]?.jsonPrimitive?.content ?: "list_to"
+        val target = args["target_address"]?.jsonPrimitive?.content ?: ""
+        val source = args["source_address"]?.jsonPrimitive?.content
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        if (target.isEmpty()) {
+            return createToolResult(false, error = "必须指定目标地址 (target_address)")
+        }
+
+        // 构造源地址后缀，如果没填 source，r2 默认使用当前 seek
+        val atSuffix = if (!source.isNullOrEmpty()) " $source" else ""
+
+        logInfo("执行交叉引用管理: $action (目标: $target, 源: ${source ?: "当前位置"}, 会话: ${sessionId.take(16)})")
+
+        // 执行逻辑
+        val resultText = when (action) {
+            // --- 查询类操作 (使用 JSON 格式获取) ---
+            "list_to" -> {
+                // axtj: list xrefs TO this address (JSON)
+                val json = R2Core.executeCommand(session.corePtr, "axtj $target")
+                formatXrefs(json, "引用了 $target 的位置 (Xrefs TO)")
+            }
+            "list_from" -> {
+                // axfj: list xrefs FROM this address (JSON)
+                val json = R2Core.executeCommand(session.corePtr, "axfj $target")
+                formatXrefs(json, "$target 引用了哪些位置 (Xrefs FROM)")
+            }
+
+            // --- 修改类操作 ---
+            "add_code" -> runR2Action(session, "axc $target$atSuffix", "已添加代码引用")
+            "add_call" -> runR2Action(session, "axC $target$atSuffix", "已添加函数调用引用")
+            "add_data" -> runR2Action(session, "axd $target$atSuffix", "已添加数据引用")
+            "add_string" -> runR2Action(session, "axs $target$atSuffix", "已添加字符串引用")
+            "remove_all" -> runR2Action(session, "ax- $target", "已清除该地址的所有引用")
+
+            else -> "❌ 未知操作: $action"
+        }
+
+        return createToolResult(true, output = resultText)
+    }
+
+    /**
+     * 格式化 Xref JSON 输出，让 AI 更容易读懂
+     */
+    private fun formatXrefs(jsonStr: String, title: String): String {
+        if (jsonStr.trim().isEmpty() || jsonStr == "[]") {
+            return "ℹ️ $title: 无数据"
+        }
+
+        try {
+            val sb = StringBuilder("📊 $title:\n")
+            // 使用简单的字符串处理来解析JSON数组
+            val items = jsonStr.trim().removePrefix("[").removeSuffix("]").split("},")
+
+            for ((index, item) in items.withIndex()) {
+                val cleanItem = item.removePrefix("{").removeSuffix("}").trim()
+                if (cleanItem.isEmpty()) continue
+
+                val fields = cleanItem.split(",").associate {
+                    val parts = it.split(":", limit = 2)
+                    if (parts.size == 2) {
+                        parts[0].trim().removeSurrounding("\"") to parts[1].trim().removeSurrounding("\"")
+                    } else {
+                        "" to ""
+                    }
+                }
+
+                val type = fields["type"] ?: "UNK"
+                val from = fields["from"]?.toLongOrNull() ?: 0
+                val to = fields["to"]?.toLongOrNull() ?: 0
+
+                // 根据查询类型决定显示哪个地址
+                val refAddr = if (title.contains("TO")) from else to
+                val hexAddr = "0x%08x".format(refAddr)
+
+                sb.append("- [$type] $hexAddr")
+
+                // 添加额外信息
+                fields["opcode"]?.let { opcode ->
+                    sb.append(" : ${opcode.trim()}")
+                }
+                fields["fcn_name"]?.let { fcnName ->
+                    sb.append(" (in $fcnName)")
+                }
+
+                sb.append("\n")
+            }
+
+            return sb.toString()
+        } catch (e: Exception) {
+            logError("Xref JSON 解析失败", e.message)
+            // 如果 JSON 解析失败，直接返回原始文本
+            return "⚠️ 解析数据失败，原始返回:\n$jsonStr"
+        }
+    }
+
+    /**
+     * 执行简单的 R2 命令并返回成功消息
+     */
+    private fun runR2Action(session: R2SessionManager.R2Session, cmd: String, successMsg: String): String {
+        R2Core.executeCommand(session.corePtr, cmd)
+        return "✅ $successMsg (Cmd: $cmd)"
     }
 }
