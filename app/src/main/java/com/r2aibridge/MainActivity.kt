@@ -258,24 +258,33 @@ fun MainScreen(
     val commandHistory = remember { mutableStateListOf<String>() }
     val context = LocalContext.current
     val view = LocalView.current
+
+    /**
+     * 生成 Android logcat 格式的日志消息
+     */
+    fun formatLogcatMessage(level: String, tag: String, message: String): String {
+        val now = java.util.Date()
+        val dateFormat = java.text.SimpleDateFormat("MM-dd HH:mm:ss.SSS", java.util.Locale.getDefault())
+        val timestamp = dateFormat.format(now)
+        val pid = android.os.Process.myPid()
+        val tid = Thread.currentThread().id
+        return String.format("%s %5d %5d %s %s    : %s", timestamp, pid, tid, level, tag, message)
+    }
     
     // 设置日志事件回调
         LaunchedEffect(Unit) {
         Log.d("MainActivity", "LaunchedEffect: 设置日志回调")
         onLogEventCallbackSet { logMessage ->
             Log.d("MainActivity", "Callback: 收到日志=$logMessage")
-            val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-            commandHistory.add(0, "[$timestamp] $logMessage")
+            commandHistory.add(0, formatLogcatMessage("I", "R2AI", logMessage))
         }
         // 注册停止事件回调，通知栏停止时通过此回调更新 UI
         onStopEventCallbackSet {
             isServiceRunning = false
-            val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-            commandHistory.add(0, "[$timestamp] ⛔ 服务已停止")
+            commandHistory.add(0, formatLogcatMessage("I", "R2AI", "⛔ 服务已停止"))
         }
         // 添加初始消息
-        val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-        commandHistory.add(0, "[$timestamp] 📱 应用启动")
+        commandHistory.add(0, formatLogcatMessage("I", "R2AI", "📱 应用启动"))
         Log.d("MainActivity", "LaunchedEffect: 启动服务")
         // 启动服务
         onStartService()
@@ -458,8 +467,7 @@ fun MainScreen(
                 onClick = {
                     onStopService()
                     isServiceRunning = false
-                    val timestamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date())
-                    commandHistory.add(0, "[$timestamp] ⛔ 服务已停止")
+                    commandHistory.add(0, formatLogcatMessage("I", "R2AI", "⛔ 服务已停止"))
                 },
                 modifier = Modifier.weight(1f),
                 enabled = isServiceRunning,
@@ -507,12 +515,30 @@ fun MainScreen(
                 )
                 
                 tools.forEach { tool ->
-                    Text(
-                        text = "• $tool",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace,
-                        modifier = Modifier.padding(vertical = 2.dp)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                val clip = ClipData.newPlainText("MCP Tool", tool)
+                                clipboard.setPrimaryClip(clip)
+                                Toast.makeText(context, "已复制工具信息", Toast.LENGTH_SHORT).show()
+                            }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "• $tool",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = "📋",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(start = 8.dp)
+                        )
+                    }
                 }
             }
         }
@@ -520,7 +546,7 @@ fun MainScreen(
         // Command History
         if (commandHistory.isNotEmpty()) {
             Text(
-                text = "历史记录 (${commandHistory.size})",
+                text = "LOG记录 (${commandHistory.size})",
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -541,16 +567,34 @@ fun MainScreen(
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp),
+                                .padding(vertical = 4.dp)
+                                .clickable {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Log Message", command)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "已复制日志信息", Toast.LENGTH_SHORT).show()
+                                },
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                             )
                         ) {
-                            Text(
-                                text = command,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(8.dp)
-                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(8.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = command,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Text(
+                                    text = "📋",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    modifier = Modifier.padding(start = 8.dp)
+                                )
+                            }
                         }
                     }
                 }
