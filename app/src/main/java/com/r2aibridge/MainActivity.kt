@@ -563,7 +563,6 @@ fun MainScreen(
                         "⚙️ r2_run_command - 执行 R2 命令 (通用)",
                         "⚙️ r2_config_manager - 配置管理 (动态调整分析参数)",
                         "🔧 r2_analysis_hints - 分析提示 (手动修正分析错误)",
-                        "🗄️ sqlite_query - SQL 查询 (读取私有数据库)",
                         "📝 r2_list_functions - 列出函数列表",
                         "📝 r2_list_strings - 列出字符串 (逆向第一步)",
                         "🔗 r2_get_xrefs - 获取交叉引用 (逻辑追踪)",
@@ -576,7 +575,8 @@ fun MainScreen(
                         "📁 os_list_dir - 列出目录内容 (支持 Root)",
                         "📄 os_read_file - 读取文件内容 (支持 Root)",
                         "💻 termux_command - Termux 环境命令 (AI 沙盒)",
-                        "💾 termux_save_script - 保存代码 (赋权/所有者)"
+                        "💾 termux_save_script - 保存代码 (赋权/所有者)",
+                        "🗄️ sqlite_query - SQL 查询 (读取私有数据库)"
                     )
                     
                     tools.forEach { tool ->
