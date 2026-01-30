@@ -48,10 +48,10 @@ class R2ServiceForeground : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("R2Service", "onStartCommand: action=${intent?.action}")
+        Log.d("R2Service", "onStartCommand: 操作=${intent?.action}")
         when (intent?.action) {
             ACTION_STOP -> {
-                Log.d("R2Service", "Received ACTION_STOP, stopping foreground service")
+                Log.d("R2Service", "收到 ACTION_STOP，正在停止前台服务")
                 updateCurrentCommand("⛔ 服务已停止")
                 try {
                     val stopIntentBroadcast = Intent(ACTION_STOP).apply {
@@ -59,7 +59,7 @@ class R2ServiceForeground : Service() {
                     }
                     sendBroadcast(stopIntentBroadcast)
                 } catch (e: Exception) {
-                    Log.e("R2Service", "Failed to broadcast ACTION_STOP", e)
+                    Log.e("R2Service", "广播 ACTION_STOP 失败", e)
                 }
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -100,7 +100,7 @@ class R2ServiceForeground : Service() {
         try {
             windowManager.addView(floatingView, params)
         } catch (e: Exception) {
-            Log.e("R2Service", "Failed to add floating window", e)
+            Log.e("R2Service", "添加浮动窗口失败", e)
         }
     }
 

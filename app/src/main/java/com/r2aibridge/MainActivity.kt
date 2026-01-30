@@ -52,13 +52,13 @@ class MainActivity : ComponentActivity() {
 
     private val logEventReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            Log.d("MainActivity", "BroadcastReceiver: 收到广播 action=${intent?.action}")
+            Log.d("MainActivity", "BroadcastReceiver: 收到广播 操作=${intent?.action}")
             when (intent?.action) {
                 R2ServiceForeground.ACTION_LOG_EVENT -> {
                     val message = intent.getStringExtra(R2ServiceForeground.EXTRA_LOG_MESSAGE)
                     Log.d("MainActivity", "BroadcastReceiver: 收到日志消息=$message")
                     message?.let { logMessage ->
-                        Log.d("MainActivity", "BroadcastReceiver: 调用回调 callback=${logEventCallback != null}")
+                        Log.d("MainActivity", "BroadcastReceiver: 调用回调 回调=${logEventCallback != null}")
                         // 通过回调传递给Compose
                         logEventCallback?.invoke(logMessage)
                     }
@@ -114,12 +114,12 @@ class MainActivity : ComponentActivity() {
         // 🔥 智能加载 Radare2 库（热插拔支持）
         try {
             R2Core.loadLibraries(this)
-            Log.i("MainActivity", "✅ R2 libraries loaded via smart loader")
+            Log.i("MainActivity", "✅ 通过智能加载器加载 R2 库")
             
             // 🧹 清理所有 Root 复制的副本文件
             MCPServer.cleanupRootCopies()
         } catch (e: Exception) {
-            Log.e("MainActivity", "❌ Failed to load R2 libraries", e)
+            Log.e("MainActivity", "❌ 加载 R2 库失败", e)
             Toast.makeText(this, "R2库加载失败：${e.message}", Toast.LENGTH_LONG).show()
         }
         
@@ -317,7 +317,7 @@ fun MainScreen(
         LaunchedEffect(Unit) {
         Log.d("MainActivity", "LaunchedEffect: 设置日志回调")
         onLogEventCallbackSet { logMessage ->
-            Log.d("MainActivity", "Callback: 收到日志=$logMessage")
+            Log.d("MainActivity", "回调: 收到日志=$logMessage")
             commandHistory.add(0, formatLogcatMessage("I", "R2AI", logMessage))
         }
         // 注册停止事件回调，通知栏停止时通过此回调更新 UI

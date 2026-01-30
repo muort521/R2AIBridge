@@ -19,7 +19,7 @@ object R2Core {
      */
     fun loadLibraries(context: Context) {
         if (isInitialized) {
-            Log.i(TAG, "Libraries already loaded, skipping...")
+            Log.i(TAG, "库已加载，跳过...")
             return
         }
         
@@ -27,11 +27,11 @@ object R2Core {
             // 1. 获取 App 原生库安装目录
             val libDir = File(context.applicationInfo.nativeLibraryDir)
             if (!libDir.exists() || !libDir.isDirectory) {
-                Log.e(TAG, "Native lib dir not found: ${libDir.absolutePath}")
+                Log.e(TAG, "原生库目录未找到: ${libDir.absolutePath}")
                 return
             }
             
-            Log.i(TAG, "Scanning native libs in: ${libDir.absolutePath}")
+            Log.i(TAG, "扫描原生库于: ${libDir.absolutePath}")
             
             // 2. 扫描所有以 libr 开头的 .so 文件
             // 过滤逻辑（双保险）：
@@ -47,7 +47,7 @@ object R2Core {
                 !name.contains("c++_shared")
             }?.toMutableList() ?: mutableListOf()
             
-            Log.i(TAG, "Found ${r2Libs.size} radare2 libraries. Starting smart load...")
+            Log.i(TAG, "找到 ${r2Libs.size} 个 radare2 库。开始智能加载...")
             
             // 3. 自旋加载循环（解决依赖顺序问题）
             var loadedCount = 0
@@ -69,7 +69,7 @@ object R2Core {
                         iterator.remove() // 从待办列表中移除
                         progressMadeInThisPass = true
                         loadedCount++
-                        Log.v(TAG, "✓ Loaded: $libName (pass $pass)")
+                        Log.v(TAG, "✓ 已加载: $libName (第 $pass 轮)")
                     } catch (e: UnsatisfiedLinkError) {
                         // 依赖未满足，暂时跳过，留给下一轮
                         // Log.v(TAG, "⊙ Skipped: $libName (deps not ready)")
@@ -81,7 +81,7 @@ object R2Core {
                 
                 if (!progressMadeInThisPass && r2Libs.isNotEmpty()) {
                     // 如果一整轮下来一个都没加载成功，说明发生了死锁或缺库
-                    Log.e(TAG, "❌ Dependency deadlock! Remaining libs cannot be loaded:")
+                    Log.e(TAG, "❌ 依赖死锁！剩余库无法加载:")
                     r2Libs.forEach { Log.e(TAG, "   - ${it.name}") }
                     break
                 }
@@ -93,16 +93,16 @@ object R2Core {
             // 这时候所有 r2 依赖都应该准备就绪了
             try {
                 System.loadLibrary("r2aibridge")
-                Log.i(TAG, "✅ Success! Loaded $loadedCount r2 libs + bridge in $pass passes")
+                Log.i(TAG, "✅ 成功！在 $pass 轮中加载了 $loadedCount 个 r2 库 + 桥接")
                 isInitialized = true
             } catch (e: UnsatisfiedLinkError) {
-                Log.e(TAG, "❌ Failed to load libr2aibridge.so. Missing dependencies:")
-                Log.e(TAG, e.message ?: "Unknown error")
+                Log.e(TAG, "❌ 加载 libr2aibridge.so 失败。缺少依赖:")
+                Log.e(TAG, e.message ?: "未知错误")
                 throw e
             }
             
         } catch (e: Exception) {
-            Log.e(TAG, "Smart load failed", e)
+            Log.e(TAG, "智能加载失败", e)
             throw e
         }
     }
