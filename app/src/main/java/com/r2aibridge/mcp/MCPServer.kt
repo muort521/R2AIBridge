@@ -593,6 +593,15 @@ object MCPServer {
                     "value" to mapOf("type" to "string", "description" to "参数值。例如进制类型('10', 's')、架构名、跳转目标地址或替换的指令字符串。")
                 ),
                 listOf("action")
+            ),
+            createToolSchema(
+                "sqlite_query",
+                "🗄️ [数据库] 使用系统内置 sqlite3 工具执行 SQL 查询。支持 Root 权限，可直接读取 /data/data 下的私有数据库。请务必使用 LIMIT 限制返回行数，防止输出过大。",
+                mapOf(
+                    "db_path" to mapOf("type" to "string", "description" to "数据库文件的绝对路径 (如 /data/data/com.xxx/databases/msg.db)"),
+                    "query" to mapOf("type" to "string", "description" to "要执行的 SQL 语句 (如 'SELECT * FROM user LIMIT 10;')")
+                ),
+                listOf("db_path", "query")
             )
         )
         
@@ -665,6 +674,7 @@ object MCPServer {
                 "r2_manage_xrefs" -> executeManageXrefs(arguments)
                 "r2_config_manager" -> executeConfigManager(arguments)
                 "r2_analysis_hints" -> executeAnalysisHints(arguments)
+                "sqlite_query" -> executeSqliteQuery(arguments)
                 "os_list_dir" -> executeOsListDir(arguments)
                 "os_read_file" -> executeOsReadFile(arguments)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
@@ -1646,6 +1656,37 @@ object MCPServer {
 
         val finalOutput = "$resultText\n\n🔍 当前效果预览:\n$preview"
         return createToolResult(true, output = finalOutput)
+    }
+
+    /**
+     * 执行 sqlite_query 工具
+     */
+    private suspend fun executeSqliteQuery(args: JsonObject): JsonElement {
+        val dbPath = args["db_path"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing db_path")
+        val query = args["query"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing query")
+
+        // 转义处理：SQL 语句中可能包含特殊字符，需要小心处理
+        // 我们使用双引号包裹 SQL，所以要把 SQL 里的双引号转义为 \"
+        val safeQuery = query.replace("\"", "\\\"")
+
+        // 命令格式: sqlite3 -header -column "路径" "SQL语句"
+        // 使用 Root 执行，因为通常是读取 /data/data
+        val command = "sqlite3 -header -column \"$dbPath\" \"$safeQuery\""
+
+        logInfo("执行 SQL: $command")
+
+        // 调用 ShellUtils (强制使用 Root)
+        val result = ShellUtils.execCommand(command, isRoot = true)
+
+        return if (result.isSuccess) {
+            // 使用 sanitizeOutput 防止查询结果 (如 SELECT * FROM huge_table) 撑爆内存
+            val cleanOutput = sanitizeOutput(result.successMsg, maxLines = 1000, maxChars = 32000)
+            createToolResult(true, output = cleanOutput)
+        } else {
+            createToolResult(false, error = "SQL Error:\n${result.errorMsg}\n(Exit Code: Fail)")
+        }
     }
 
     /**

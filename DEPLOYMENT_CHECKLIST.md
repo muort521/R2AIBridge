@@ -30,7 +30,7 @@
   - `R2Core.closeR2Core()` 正常释放资源
 
 - [ ] **MCP 工具验证**
-  - 所有 14 个工具都在 `tools/list` 中返回
+  - 所有 18 个工具都在 `tools/list` 中返回
   - 每个工具的 JSON Schema 正确
   - 工具调用能正确返回结果或错误
 

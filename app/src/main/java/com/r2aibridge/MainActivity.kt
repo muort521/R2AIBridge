@@ -22,6 +22,7 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.*
@@ -41,6 +42,11 @@ import com.r2aibridge.service.R2ServiceForeground
 import com.r2aibridge.ui.theme.R2AIBridgeTheme
 import java.net.Inet4Address
 import java.net.NetworkInterface
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
 
 class MainActivity : ComponentActivity() {
 
@@ -256,8 +262,43 @@ fun MainScreen(
 ) {
     var isServiceRunning by remember { mutableStateOf(true) } // 默认启动
     val commandHistory = remember { mutableStateListOf<String>() }
+    val realLogcatHistory = remember { mutableStateListOf<String>() }
+    val logListState = rememberLazyListState()
     val context = LocalContext.current
     val view = LocalView.current
+
+    /**
+     * 启动持续的 R2AI 日志监听
+     */
+    suspend fun startLogcatMonitoring() {
+        try {
+            val process = Runtime.getRuntime().exec(arrayOf("logcat", "-s", "R2AI"))
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+            
+            var line: String?
+            while (reader.readLine().also { line = it } != null && !process.waitFor(10, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                line?.let { logLine ->
+                    if (logLine.isNotBlank()) {
+                        // 在主线程上更新UI
+                        withContext(Dispatchers.Main) {
+                            realLogcatHistory.add(logLine)
+                            // 限制历史记录数量
+                            if (realLogcatHistory.size > 1000) {
+                                realLogcatHistory.removeRange(0, realLogcatHistory.size - 1000)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            reader.close()
+            process.destroy()
+        } catch (e: Exception) {
+            withContext(Dispatchers.Main) {
+                realLogcatHistory.add("日志监听失败: ${e.message}")
+            }
+        }
+    }
 
     /**
      * 生成 Android logcat 格式的日志消息
@@ -289,6 +330,11 @@ fun MainScreen(
         Log.d("MainActivity", "LaunchedEffect: 启动服务")
         // 启动服务
         onStartService()
+
+        // 启动持续的 R2AI 日志监听
+        launch(Dispatchers.IO) {
+            startLogcatMonitoring()
+        }
     }
     
     // 设置透明状态栏和图标颜色
@@ -483,115 +529,167 @@ fun MainScreen(
             Column(
                 modifier = Modifier.padding(16.dp)
             ) {
-                Text(
-                    text = "可用的 MCP 工具 (17个)",
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
+                var isToolsExpanded by remember { mutableStateOf(false) }
                 
-                val tools = listOf(
-                    "🚪 r2_open_file - 打开文件 (默认 aa 基础分析)",
-                    "⚡ r2_analyze_file - 深度分析 (aaa, 耗时较长)",
-                    "🎯 r2_analyze_target - 智能分析策略 (精准下刀)",
-                    "⚙️ r2_run_command - 执行 R2 命令 (通用)",
-                    "⚙️ r2_config_manager - 配置管理 (动态调整分析参数)",
-                    "🔧 r2_analysis_hints - 分析提示 (手动修正分析错误)",
-                    "📝 r2_list_functions - 列出函数列表",
-                    "📝 r2_list_strings - 列出字符串 (逆向第一步)",
-                    "🔗 r2_get_xrefs - 获取交叉引用 (逻辑追踪)",
-                    "🔗 r2_manage_xrefs - 管理交叉引用 (手动修复)",
-                    "ℹ️ r2_get_info - 获取文件详细信息",
-                    "🔍 r2_decompile_function - 反编译函数",
-                    "📜 r2_disassemble - 反汇编代码",
-                    "🧪 r2_test - 测试 R2 库状态 (诊断)",
-                    "🔒 r2_close_session - 关闭会话",
-                    "📁 os_list_dir - 列出目录内容 (支持 Root)",
-                    "📄 os_read_file - 读取文件内容 (支持 Root)"
-                )
-                
-                tools.forEach { tool ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                val clip = ClipData.newPlainText("MCP Tool", tool)
-                                clipboard.setPrimaryClip(clip)
-                                Toast.makeText(context, "已复制工具信息", Toast.LENGTH_SHORT).show()
-                            }
-                            .padding(vertical = 2.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { isToolsExpanded = !isToolsExpanded },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "可用的 MCP 工具 (18个)",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(
+                        onClick = { isToolsExpanded = !isToolsExpanded },
+                        modifier = Modifier.size(24.dp)
                     ) {
                         Text(
-                            text = "• $tool",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            modifier = Modifier.weight(1f)
+                            text = if (isToolsExpanded) "▼" else "▶",
+                            style = MaterialTheme.typography.bodyLarge
                         )
-                        Text(
-                            text = "📋",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(start = 8.dp)
-                        )
+                    }
+                }
+                
+                if (isToolsExpanded) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    
+                    val tools = listOf(
+                        "🚪 r2_open_file - 打开文件 (默认 aa 基础分析)",
+                        "⚡ r2_analyze_file - 深度分析 (aaa, 耗时较长)",
+                        "🎯 r2_analyze_target - 智能分析策略 (精准下刀)",
+                        "⚙️ r2_run_command - 执行 R2 命令 (通用)",
+                        "⚙️ r2_config_manager - 配置管理 (动态调整分析参数)",
+                        "🔧 r2_analysis_hints - 分析提示 (手动修正分析错误)",
+                        "🗄️ sqlite_query - SQL 查询 (读取私有数据库)",
+                        "📝 r2_list_functions - 列出函数列表",
+                        "📝 r2_list_strings - 列出字符串 (逆向第一步)",
+                        "🔗 r2_get_xrefs - 获取交叉引用 (逻辑追踪)",
+                        "🔗 r2_manage_xrefs - 管理交叉引用 (手动修复)",
+                        "ℹ️ r2_get_info - 获取文件详细信息",
+                        "🔍 r2_decompile_function - 反编译函数",
+                        "📜 r2_disassemble - 反汇编代码",
+                        "🧪 r2_test - 测试 R2 库状态 (诊断)",
+                        "🔒 r2_close_session - 关闭会话",
+                        "📁 os_list_dir - 列出目录内容 (支持 Root)",
+                        "📄 os_read_file - 读取文件内容 (支持 Root)"
+                    )
+                    
+                    tools.forEach { tool ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("MCP Tool", tool)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "已复制工具信息", Toast.LENGTH_SHORT).show()
+                                }
+                                .padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "• $tool",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                text = "📋",
+                                style = MaterialTheme.typography.bodySmall,
+                                modifier = Modifier.padding(start = 8.dp)
+                            )
+                        }
                     }
                 }
             }
         }
 
-        // Command History
-        if (commandHistory.isNotEmpty()) {
+        // Real R2AI Logcat
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             Text(
-                text = "LOG记录 (${commandHistory.size})",
+                text = "R2AI LOGCAT记录 (${realLogcatHistory.size})",
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp)
+                modifier = Modifier.weight(1f)
             )
-            
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f) // 使用剩余空间
+            IconButton(
+                onClick = {
+                    realLogcatHistory.clear()
+                    Toast.makeText(context, "已清除所有日志", Toast.LENGTH_SHORT).show()
+                },
+                modifier = Modifier.size(24.dp)
             ) {
+                Text(
+                    text = "🗑️",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+            }
+        }
+        
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f) // 使用剩余空间
+        ) {
+            // 自动滚动到最新日志
+            LaunchedEffect(realLogcatHistory.size) {
+                if (realLogcatHistory.isNotEmpty()) {
+                    logListState.animateScrollToItem(realLogcatHistory.size - 1)
+                }
+            }
+            
+            if (realLogcatHistory.isNotEmpty()) {
                 LazyColumn(
+                    state = logListState,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(8.dp)
                 ) {
-                    items(commandHistory) { command ->
+                    items(realLogcatHistory) { logLine ->
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(vertical = 4.dp)
+                                .padding(vertical = 2.dp)
                                 .clickable {
                                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = ClipData.newPlainText("Log Message", command)
+                                    val clip = ClipData.newPlainText("Logcat Line", logLine)
                                     clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "已复制日志信息", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, "已复制日志行", Toast.LENGTH_SHORT).show()
                                 },
                             colors = CardDefaults.cardColors(
                                 containerColor = MaterialTheme.colorScheme.surfaceVariant
                             )
                         ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = command,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Text(
-                                    text = "📋",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    modifier = Modifier.padding(start = 8.dp)
-                                )
-                            }
+                            Text(
+                                text = logLine,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.padding(8.dp)
+                            )
                         }
                     }
+                }
+            } else {
+                // 显示空状态
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "暂无 R2AI 日志\n等待日志输出...",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
                 }
             }
         }

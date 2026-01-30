@@ -2,13 +2,13 @@
 
 > ✅ **构建状态**: 成功 | **APK**: `app/build/outputs/apk/debug/app-debug.apk`
 
-将 Radare2 逆向引擎集成到 Android App，通过前台服务运行 Ktor HTTP 服务器，暴露 7 个核心 MCP 工具。
+将 Radare2 逆向引擎集成到 Android App，通过前台服务运行 Ktor HTTP 服务器，暴露 18 个核心 MCP 工具。
 
 ## 🎯 核心特性
 
 - ✅ **命令行集成**: 通过 JNI 包装 Radare2 CLI（避免复杂的头文件依赖）
 - ✅ **前台服务**: 后台运行 Ktor HTTP 服务器 (端口 5050)
-- ✅ **MCP 协议**: JSON-RPC 2.0 实现，7 个 Radare2 + OS 工具
+- ✅ **MCP 协议**: JSON-RPC 2.0 实现，18 个 Radare2 + OS 工具
 - ✅ **并发管理**: 16 桶锁机制，支持多客户端
 - ✅ **Material 3 UI**: Jetpack Compose 现代界面
 - ✅ **零头文件依赖**: 简化的 CMake 配置
@@ -51,7 +51,7 @@ app/
 
 ## MCP 工具列表
 
-服务器在 `0.0.0.0:5050` 端点暴露以下 14 个 MCP 工具：
+服务器在 `0.0.0.0:5050` 端点暴露以下 18 个 MCP 工具：
 
 ### 1. r2_open_file
 打开二进制文件并执行基础分析。
