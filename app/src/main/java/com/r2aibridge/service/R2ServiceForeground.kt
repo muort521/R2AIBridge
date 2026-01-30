@@ -1,206 +1,1744 @@
-package com.r2aibridge.service
+package com.r2aibridge.mcp
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
-import android.app.Service
-import android.content.Context
-import android.content.Intent
-import android.os.Build
-import android.os.IBinder
 import android.util.Log
-import android.view.WindowManager
-import android.view.View
-import androidx.core.app.NotificationCompat
-import com.r2aibridge.R
-import com.r2aibridge.mcp.MCPServer
-import io.ktor.server.engine.*
-import io.ktor.server.cio.*
-import kotlinx.coroutines.*
-import java.net.Inet4Address
-import java.net.NetworkInterface
+import kotlinx.coroutines.runBlocking
+import com.r2aibridge.R2Core
+import com.r2aibridge.ShellUtils
+import io.ktor.http.*
+import io.ktor.serialization.kotlinx.json.*
+import io.ktor.server.application.*
+import io.ktor.server.plugins.contentnegotiation.*
+import io.ktor.server.request.*
+import io.ktor.server.response.*
+import io.ktor.server.routing.*
+import kotlinx.serialization.json.*
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.*
 
+object MCPServer {
+        // --- [新增] Termux 常量与辅助函数 ---
+        // AI 脚本沙盒路径
+        private const val TERMUX_AI_DIR = "/data/data/com.termux/files/home/AI"
 
-class R2ServiceForeground : Service() {
-    private lateinit var windowManager: WindowManager
-    private lateinit var floatingView: View
-    private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
-    private var ktorServer: EmbeddedServer<*, *>? = null
-    private var currentCommand: String = "待机中"
-
-    companion object {
-        private const val CHANNEL_ID = "R2_SERVICE_CHANNEL"
-        private const val NOTIFICATION_ID = 1
-        private const val PORT = 5050
-
-        const val ACTION_STOP = "com.r2aibridge.ACTION_STOP"
-        const val ACTION_LOG_EVENT = "com.r2aibridge.ACTION_LOG_EVENT"
-        const val EXTRA_LOG_MESSAGE = "log_message"
-    }
-
-    override fun onCreate() {
-        super.onCreate()
-        createNotificationChannel()
-        startForeground(NOTIFICATION_ID, createNotification())
-        initFloatingWindow()
-        startKtorServer()
-    }
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        Log.d("R2Service", "onStartCommand: 操作=${intent?.action}")
-        when (intent?.action) {
-            ACTION_STOP -> {
-                Log.d("R2Service", "收到 ACTION_STOP，正在停止前台服务")
-                updateCurrentCommand("⛔ 服务已停止")
-                try {
-                    val stopIntentBroadcast = Intent(ACTION_STOP).apply {
-                        setPackage(packageName)
-                    }
-                    sendBroadcast(stopIntentBroadcast)
-                } catch (e: Exception) {
-                    Log.e("R2Service", "广播 ACTION_STOP 失败", e)
+        /**
+         * 获取 Termux 的用户 ID (UID)
+         * 因为 Termux 不是以 Root 运行的，我们需要知道它的 UID 才能用 su 切换过去
+         */
+        private fun getTermuxUser(): String {
+            // 通过查看 Termux 数据目录的所有者来判断 UID
+            val result = ShellUtils.execCommand("ls -ldn /data/data/com.termux", isRoot = true)
+            if (result.isSuccess) {
+                // 输出类似: drwx------ 18 10157 10157 ...
+                val parts = result.successMsg.trim().split("\\s+".toRegex())
+                if (parts.size > 2) {
+                    return parts[2] // 这就是 UID (例如 10157)
                 }
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return START_NOT_STICKY
             }
+            return "10421" // 如果检测失败，使用默认常见的 Termux UID
         }
-        return START_STICKY
+
+        /**
+         * 构造 Termux 环境变量
+         * ⚠️ 关键：如果没有这个，Python/Node 等命令会因为找不到库而报错
+         */
+        private fun getTermuxEnvSetup(): String {
+            val termuxPrefix = "/data/data/com.termux/files/usr"
+            val termuxHome = "/data/data/com.termux/files/home"
+                 return "export PATH=${termuxPrefix}/bin:$" + "PATH && " +
+                     "export LD_LIBRARY_PATH=${termuxPrefix}/lib && " +
+                     "export HOME=${termuxHome} && " +
+                     "export TMPDIR=/data/local/tmp && " +
+                     "mkdir -p $TERMUX_AI_DIR && " +
+                     "cd $TERMUX_AI_DIR && "
+        }
+
+        /**
+         * 简单的安全检查，防止 AI 删库
+         */
+        private fun isDangerousCommand(command: String): Boolean {
+            val dangerousCommands = listOf(
+                "rm -rf /", "rm -rf /*", "mkfs", "dd if=", 
+                "reboot", "shutdown", ":(){ :|:& };:"
+            )
+            val lower = command.lowercase()
+            return dangerousCommands.any { lower.contains(it) }
+        }
+    
+    private const val TAG = "R2AI"
+    
+    private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+    
+    private val json = Json { 
+        ignoreUnknownKeys = true
+        isLenient = true
+        prettyPrint = true
+        coerceInputValues = true
     }
 
-    override fun onBind(intent: Intent?): IBinder? = null
+    private fun logInfo(msg: String) {
+        val timestamp = dateFormat.format(Date())
+        val logMsg = "[$timestamp] $msg"
+        Log.i(TAG, logMsg)
+        println(logMsg)
+    }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        ktorServer?.stop(1000, 2000)
-        serviceScope.cancel()
-        if (::floatingView.isInitialized) {
-            windowManager.removeView(floatingView)
+    private fun logError(msg: String, error: String? = null) {
+        val timestamp = dateFormat.format(Date())
+        val logMsg = "[$timestamp] ⚠️ $msg" + (error?.let { ": $it" } ?: "")
+        Log.e(TAG, logMsg)
+        println(logMsg)
+    }
+
+    /**
+     * 清洗和截断 Radare2 的输出，防止 AI 崩溃
+     */
+    private fun sanitizeOutput(
+        raw: String, 
+        maxLines: Int = 500, 
+        maxChars: Int = 16000,
+        filterGarbage: Boolean = false
+    ): String {
+        if (raw.isBlank()) return "(Empty Output)"
+
+        var output = raw
+        
+        // 1. 过滤垃圾段 (如 .eh_frame, .text 中的乱码)
+        if (filterGarbage) {
+            output = output.lineSequence()
+                .filter { line ->
+                    !line.contains(".eh_frame") && 
+                    !line.contains(".gcc_except_table") &&
+                    !line.contains("libunwind")
+                }
+                .joinToString("\n")
+        }
+        
+        // 2. 字符数截断
+        if (output.length > maxChars) {
+            logInfo("输出超过 $maxChars 字符，已截断")
+            return output.take(maxChars) + "\n\n[⛔ SYSTEM: 输出超过 $maxChars 字符，已强制截断。请缩小分析范围。]"
+        }
+        
+        // 3. 行数截断
+        val lines = output.lines()
+        if (lines.size > maxLines) {
+            logInfo("输出超过 $maxLines 行 (共 ${lines.size} 行)，已截断")
+            return lines.take(maxLines).joinToString("\n") + 
+                   "\n\n[⛔ SYSTEM: 输出超过 $maxLines 行 (共 ${lines.size} 行)，已截断。请使用过滤参数缩小范围。]"
+        }
+
+        return output
+    }
+
+    /**
+     * 检查设备是否有 Root 权限
+     */
+    private fun hasRootPermission(): Boolean {
+        return try {
+            logInfo("检查 Root 权限...")
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "echo test"))
+            val exitCode = process.waitFor()
+            val hasPermission = exitCode == 0
+            logInfo("Root 权限检查结果: $hasPermission (exitCode: $exitCode)")
+            hasPermission
+        } catch (e: Exception) {
+            logError("Root 权限检查异常", e.message)
+            false
         }
     }
 
-    private fun initFloatingWindow() {
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
-        floatingView = View(this)
-
-        val params = WindowManager.LayoutParams(
-            1, 1,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
-            android.graphics.PixelFormat.TRANSPARENT
-        )
-
-        params.gravity = android.view.Gravity.TOP or android.view.Gravity.START
-        params.x = 0
-        params.y = 0
+    /**
+     * Root 复制逻辑
+     */
+    private fun tryRootCopy(originalPath: String): String? {
+        if (!hasRootPermission()) {
+            logError("设备未获得 Root 权限，无法执行 Root 复制", "文件: $originalPath")
+            return null
+        }
 
         try {
-            windowManager.addView(floatingView, params)
+            val originalFile = File(originalPath)
+            if (!originalFile.exists()) {
+                logError("原始文件不存在，无法复制", originalPath)
+                return null
+            }
+
+            val cacheDir = File(System.getProperty("java.io.tmpdir"), "r2_root_cache")
+            if (!cacheDir.exists()) {
+                cacheDir.mkdirs()
+            }
+
+            val fileName = originalFile.name
+            val copyPath = File(cacheDir, "${System.currentTimeMillis()}_${fileName}").absolutePath
+
+            logInfo("尝试 Root 复制文件: $originalPath -> $copyPath")
+
+            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "cp '$originalPath' '$copyPath' && chmod 777 '$copyPath'"))
+            val exitCode = process.waitFor()
+
+            if (exitCode == 0) {
+                val copyFile = File(copyPath)
+                if (copyFile.exists() && copyFile.canRead()) {
+                    logInfo("Root 复制成功: $copyPath")
+                    return copyPath
+                } else {
+                    logError("Root 复制后文件不存在或不可读", copyPath)
+                }
+            } else {
+                val error = process.errorStream.bufferedReader().readText()
+                logError("Root 复制失败", "exitCode=$exitCode, error=$error")
+            }
         } catch (e: Exception) {
-            Log.e("R2Service", "添加浮动窗口失败", e)
+            logError("Root 复制异常", e.message)
         }
+
+        return null
     }
 
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "R2服务",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Radare2 AI Bridge 后台服务"
-            }
-            val manager = getSystemService(NotificationManager::class.java)
-            manager.createNotificationChannel(channel)
-        }
-    }
-
-    private fun createNotification(): Notification {
-        val stopIntent = Intent(this, R2ServiceForeground::class.java).apply {
-            action = ACTION_STOP
-        }
-        val stopPendingIntent = PendingIntent.getService(
-            this, 1, stopIntent,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-
-        val mainIntent = Intent(this, com.r2aibridge.MainActivity::class.java)
-        val mainPendingIntent = PendingIntent.getActivity(
-            this, 0, mainIntent,
-            PendingIntent.FLAG_IMMUTABLE
-        )
-
-        val localIp = getLocalIpAddress()
-        
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("R2 MCP 服务运行中")
-            .setContentText("$localIp:$PORT | $currentCommand")
-            .setSmallIcon(android.R.drawable.ic_menu_info_details)
-            .setContentIntent(mainPendingIntent)
-            .addAction(
-                android.R.drawable.ic_menu_close_clear_cancel,
-                "停止",
-                stopPendingIntent
-            )
-            .setOngoing(true)
-            .build()
-    }
-
-    private fun startKtorServer() {
-        serviceScope.launch {
-            try {
-                ktorServer = embeddedServer(CIO, port = PORT, host = "0.0.0.0") {
-                    MCPServer.configure(this) { logEvent ->
-                        updateCurrentCommand(logEvent)
-                        broadcastLogEvent(logEvent)
+    fun cleanupRootCopies() {
+        try {
+            val cacheDir = File(System.getProperty("java.io.tmpdir"), "r2_root_cache")
+            if (cacheDir.exists() && cacheDir.isDirectory) {
+                val files = cacheDir.listFiles()
+                if (files != null) {
+                    var deletedCount = 0
+                    for (file in files) {
+                        if (file.isFile && file.delete()) {
+                            deletedCount++
+                        }
                     }
-                }.start(wait = false)
+                    logInfo("已清理 $deletedCount 个 Root 复制副本文件")
+                }
+            }
+        } catch (e: Exception) {
+            logError("清理 Root 复制副本失败", e.message)
+        }
+    }
+
+    fun configure(app: Application, onLogEvent: (String) -> Unit) {
+        app.install(ContentNegotiation) {
+            json(json)
+        }
+
+        app.intercept(ApplicationCallPipeline.Plugins) {
+            call.response.header("Access-Control-Allow-Origin", "*")
+            call.response.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            call.response.header("Access-Control-Allow-Headers", "*")
+            
+            if (call.request.httpMethod == HttpMethod.Options) {
+                call.respond(HttpStatusCode.OK)
+                finish()
+            }
+        }
+
+        app.routing {
+            get("/") {
+                val info = buildJsonObject {
+                    put("name", "Radare2 MCP Server")
+                    put("version", "1.0")
+                    put("status", "running")
+                    put("endpoints", JsonArray(listOf(
+                        JsonPrimitive("/messages - Standard MCP endpoint"),
+                        JsonPrimitive("/health - Health check")
+                    )))
+                }
                 
-                val startMsg = "✅ 服务启动: 0.0.0.0:$PORT"
-                updateCurrentCommand(startMsg)
-                broadcastLogEvent(startMsg)
-            } catch (e: Exception) {
-                updateCurrentCommand("启动失败: ${e.message}")
+                call.respondText(
+                    text = json.encodeToString(JsonObject.serializer(), info),
+                    contentType = ContentType.Application.Json,
+                    status = HttpStatusCode.OK
+                )
+            }
+
+            post("/messages") {
+                var requestId: JsonElement? = null
+                var method = "unknown"
+
+                try {
+                    val requestBody = call.receiveText()
+
+                    if (requestBody.isBlank()) {
+                        val errorObj = buildJsonObject {
+                            put("code", -32700)
+                            put("message", "Empty request body")
+                        }
+                        val errorResp = buildJsonObject {
+                            put("jsonrpc", "2.0")
+                            put("id", JsonNull)
+                            put("error", errorObj)
+                        }.toString()
+
+                        call.respondText(
+                            text = errorResp,
+                            contentType = ContentType.Application.Json,
+                            status = HttpStatusCode.BadRequest
+                        )
+                        return@post
+                    }
+
+                    val request = json.decodeFromString<MCPRequest>(requestBody)
+                    requestId = request.id
+                    method = request.method
+
+                    val idStr = when (val id = request.id) {
+                        is JsonPrimitive -> id.content.take(8)
+                        else -> "null"
+                    }
+
+                    val clientIp = call.request.local.remoteHost
+                    val logMsg = "📥 ${request.method} | $clientIp | ID:$idStr"
+                    logInfo("[App -> R2] ${request.method} (ID: $idStr)")
+                    onLogEvent(logMsg)
+
+                    if (method == "notifications/initialized") {
+                        logInfo("客户端已初始化")
+                        call.respond(HttpStatusCode.NoContent)
+                        return@post
+                    }
+
+                    val result = when (request.method) {
+                        "initialize" -> handleInitialize(request.params)
+                        "ping" -> handlePing()
+                        "tools/list" -> handleToolsList()
+                        "tools/call" -> {
+                            val toolName = request.params?.get("name")?.jsonPrimitive?.content ?: "unknown"
+                            val toolLogMsg = "🔧 工具调用: $toolName | $clientIp"
+                            onLogEvent(toolLogMsg)
+                            handleToolCall(request.params, onLogEvent)
+                        }
+                        else -> {
+                            logError("未知方法", method)
+                            val errorObj = buildJsonObject {
+                                put("code", -32601)
+                                put("message", "Method not found: ${request.method}")
+                            }
+                            val errorResp = buildJsonObject {
+                                put("jsonrpc", "2.0")
+                                put("id", request.id ?: JsonNull)
+                                put("error", errorObj)
+                            }.toString()
+
+                            call.respondText(
+                                text = errorResp,
+                                contentType = ContentType.Application.Json,
+                                status = HttpStatusCode.OK
+                            )
+                            return@post
+                        }
+                    }
+
+                    val responseJson = buildJsonObject {
+                        put("jsonrpc", "2.0")
+                        put("id", request.id ?: JsonNull)
+                        put("result", result)
+                    }.toString()
+
+                    if (responseJson.length < 500) {
+                        logInfo("[R2 -> App] ${responseJson.take(200)}")
+                    } else {
+                        logInfo("[R2 -> App] ${responseJson.length} bytes")
+                    }
+
+                    call.response.header(HttpHeaders.CacheControl, "no-cache")
+
+                    call.respondText(
+                        text = responseJson,
+                        contentType = ContentType.Application.Json,
+                        status = HttpStatusCode.OK
+                    )
+                } catch (e: Exception) {
+                    logError("处理请求失败", e.message)
+                    onLogEvent("⚠️ 错误: ${e.message}")
+
+                    val errorObj = buildJsonObject {
+                        put("code", -32603)
+                        put("message", "Internal error: ${e.message}")
+                    }
+                    val errorResp = buildJsonObject {
+                        put("jsonrpc", "2.0")
+                        put("id", requestId ?: JsonNull)
+                        put("error", errorObj)
+                    }.toString()
+
+                    call.respondText(
+                        text = errorResp,
+                        contentType = ContentType.Application.Json,
+                        status = HttpStatusCode.OK
+                    )
+                }
+            }
+
+            options("/*") {
+                call.response.header(HttpHeaders.AccessControlAllowOrigin, "*")
+                call.response.header(HttpHeaders.AccessControlAllowMethods, "GET, POST, OPTIONS")
+                call.response.header(HttpHeaders.AccessControlAllowHeaders, "Content-Type, Cache-Control")
+                call.respondText("", ContentType.Text.Plain, HttpStatusCode.OK)
+            }
+
+            get("/health") {
+                logInfo("健康检查")
+                val stats = R2SessionManager.getStats()
+                call.respondText(
+                    "R2 MCP Server Running\n" +
+                    "Active Sessions: ${R2SessionManager.getSessionCount()}\n" +
+                    "Session Stats: $stats",
+                    ContentType.Text.Plain
+                )
+            }
+        }
+        
+        logInfo("🚀 MCP 服务器已启动")
+    }
+
+    private fun handlePing(): JsonElement {
+        logInfo("收到 ping 请求")
+        return buildJsonObject {
+            put("message", "pong")
+            put("timestamp", System.currentTimeMillis())
+        }
+    }
+
+    private fun handleInitialize(params: JsonObject?): JsonElement {
+        val clientProtocolVersion = params?.get("protocolVersion")?.jsonPrimitive?.content
+        val negotiatedVersion = clientProtocolVersion ?: "2024-11-05"
+        
+        logInfo("协议协商: 客户端=$clientProtocolVersion -> 最终使用=$negotiatedVersion")
+        
+        return buildJsonObject {
+            put("protocolVersion", negotiatedVersion)
+            put("capabilities", buildJsonObject {
+                put("tools", buildJsonObject {
+                    put("listChanged", false)
+                })
+            })
+            put("serverInfo", buildJsonObject {
+                put("name", "Radare2 MCP Server")
+                put("version", "1.0")
+            })
+        }
+    }
+
+    private fun handleToolsList(): JsonElement {
+        val tools = listOf(
+            createToolSchema(
+                "r2_open_file",
+                "🚪 [会话管理] 打开二进制文件。默认执行基础分析 (aa) 以快速识别函数。注意：对于大型文件 (>10MB)，强烈建议将 auto_analyze 设为 false 以免超时。如需深度分析，可后续调用 r2_analyze_file 或使用 r2_run_command 执行 'aaa'。",
+                mapOf(
+                    "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径"),
+                    "session_id" to mapOf("type" to "string", "description" to "可选:使用现有会话 ID,如果不提供则自动创建"),
+                    "auto_analyze" to mapOf("type" to "boolean", "description" to "是否自动执行基础分析 (aa 命令)。默认为 true。对于大文件 (>10MB) 请设为 false。", "default" to true)
+                ),
+                listOf("file_path")
+            ),
+            createToolSchema(
+                "r2_analyze_file",
+                "⚡ [深度分析] 一次性执行深度分析 (aaa) 并自动释放资源。支持复用现有 session_id 或根据文件路径查找会话。",
+                mapOf(
+                    "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径"),
+                    "session_id" to mapOf("type" to "string", "description" to "可选：现有会话 ID")
+                ),
+                listOf("file_path")
+            ),
+            createToolSchema(
+                "r2_run_command",
+                "⚙️ [通用命令] 在指定会话中执行任意 Radare2 命令。支持所有 r2 命令。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "command" to mapOf("type" to "string", "description" to "Radare2 命令")
+                ),
+                listOf("session_id", "command")
+            ),
+            createToolSchema(
+                "r2_list_functions",
+                "📋 [函数分析] 列出二进制文件中的已识别函数。使用 'afl' 命令。可通过 filter 过滤函数名，防止输出过多。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "filter" to mapOf("type" to "string", "description" to "可选:函数名过滤器（如 'sym.Java' 只显示 Java 相关函数）", "default" to ""),
+                    "limit" to mapOf("type" to "integer", "description" to "最大返回数量（默认 500）", "default" to 500)
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
+                "r2_list_strings",
+                "📝 [逆向第一步] 列出二进制文件中的字符串。通过配置 bin.str.min 进行底层过滤，提高大文件分析性能。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "mode" to mapOf("type" to "string", "description" to "搜索模式: 'data' (iz) 或 'all' (izz)", "default" to "data"),
+                    "min_length" to mapOf("type" to "integer", "description" to "最小字符串长度（默认 5，在 R2 核心层过滤）", "default" to 5)
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
+                "r2_get_xrefs",
+                "🔗 [逻辑追踪必备] 获取指定地址/函数的交叉引用。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "目标地址或函数名"),
+                    "direction" to mapOf("type" to "string", "description" to "方向: 'to' (默认) 或 'from'", "default" to "to"),
+                    "limit" to mapOf("type" to "integer", "description" to "最大返回数量（默认 50）", "default" to 50)
+                ),
+                listOf("session_id", "address")
+            ),
+            createToolSchema(
+                "r2_get_info",
+                "ℹ️ [环境感知] 获取二进制文件的详细信息。包括架构（32/64位）、平台（ARM/x86）、文件类型（ELF/DEX）等。帮助 AI 决定分析策略。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "detailed" to mapOf("type" to "boolean", "description" to "详细模式", "default" to false)
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
+                "r2_decompile_function",
+                "🔍 [代码分析] 反编译指定地址的函数为伪代码。使用 'pdc' 命令，将汇编代码转换为类 C 语言的可读代码。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "函数地址（十六进制格式，如：0x401000 或 main）")
+                ),
+                listOf("session_id", "address")
+            ),
+            createToolSchema(
+                "r2_disassemble",
+                "📜 [汇编分析] 反汇编指定地址的代码。使用 'pd' 命令显示汇编指令。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "起始地址（十六进制格式，如：0x401000）"),
+                    "lines" to mapOf("type" to "integer", "description" to "反汇编行数（默认10行）", "default" to 10)
+                ),
+                listOf("session_id", "address")
+            ),
+            createToolSchema(
+                "r2_close_session",
+                "🔒 [会话管理] 关闭指定的 Radare2 会话。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
+                "r2_analyze_target",
+                "🎯 [智能分析] 执行特定的 Radare2 递归分析策略。请根据分析需求选择最轻量级的策略，避免盲目使用全量分析。\n" +
+                "策略说明：\n" +
+                "- 'basic' (aa): 基础分析，识别符号和入口点。\n" +
+                "- 'blocks' (aab): 仅分析当前函数或地址的基本块结构（修复函数截断问题）。\n" +
+                "- 'calls' (aac): 递归分析函数调用目标（发现未识别的子函数）。\n" +
+                "- 'refs' (aar): 分析数据引用（识别字符串引用、全局变量）。\n" +
+                "- 'pointers' (aad): 分析数据段指针（用于 C++ 虚表、跳转表恢复）。\n" +
+                "- 'full' (aaa): 全量深度分析（耗时极长，仅在小文件或必要时使用）。",
+                mapOf(
+                    "strategy" to mapOf("type" to "string", "enum" to listOf("basic", "blocks", "calls", "refs", "pointers", "full"), "description" to "分析策略模式"),
+                    "address" to mapOf("type" to "string", "description" to "可选：指定分析的起始地址或符号（例如 '0x00401000' 或 'sym.main'）。如果不填，默认分析全局或当前位置。"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("strategy", "session_id")
+            ),
+            createToolSchema(
+                "r2_manage_xrefs",
+                "🔗 [交叉引用管理] 管理代码和数据的交叉引用(Xrefs)。用于查询'谁调用了函数'、'字符串在哪里被使用'，或手动修复缺失的引用关系。\n" +
+                "操作类型说明：\n" +
+                "- 'list_to' (axt): 查询引用了目标地址的位置（例如：谁调用了这个函数？）。\n" +
+                "- 'list_from' (axf): 查询目标地址引用了哪些位置（例如：这个函数里调用了谁？）。\n" +
+                "- 'add_code' (axc): 手动添加一个代码引用（修复未识别的跳转）。\n" +
+                "- 'add_call' (axC): 手动添加一个函数调用引用。\n" +
+                "- 'add_data' (axd): 手动添加一个数据引用（如指针指向）。\n" +
+                "- 'add_string' (axs): 手动添加一个字符串引用。\n" +
+                "- 'remove_all' (ax-): 删除指定地址的所有引用（修复错误的分析）。",
+                mapOf(
+                    "action" to mapOf("type" to "string", "enum" to listOf("list_to", "list_from", "add_code", "add_call", "add_data", "add_string", "remove_all"), "description" to "要执行的操作类型"),
+                    "target_address" to mapOf("type" to "string", "description" to "目标地址或符号（例如 '0x00401000', 'sym.main', 'entry0'）。对于添加操作，这是引用指向的目标。"),
+                    "source_address" to mapOf("type" to "string", "description" to "源地址（可选）。对于添加操作(add_*)，这是发出引用的位置。如果不填，默认为当前光标位置。"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("action", "target_address", "session_id")
+            ),
+             createToolSchema(
+                "r2_config_manager",
+                "⚙️ [配置管理] 管理 Radare2 的分析与显示配置 (eval variables)。\n" +
+                "当分析结果不理想、函数截断或需要深度分析时使用。\n" +
+                "关键配置参考：\n" +
+                "- 流量控制: 'anal.hasnext' (继续分析后续代码), 'anal.jmp.after' (无条件跳转后继续)\n" +
+                "- 混淆/大块: 'anal.bb.maxsize' (调整基本块大小限制)\n" +
+                "- 引用/字符串: 'anal.strings' (开启字符串引用,默认关闭), 'anal.datarefs' (代码引用数据)\n" +
+                "- 边界范围 (anal.in): 'io.maps' (分析所有映射), 'dbg.stack' (分析栈), 'bin.section' (当前段)\n" +
+                "- 跳转表: 'anal.jmp.tbl' (开启实验性跳转表分析)",
+                mapOf(
+                    "action" to mapOf("type" to "string", "enum" to listOf("get", "set", "list"), "description" to "操作类型：get(读取当前值), set(修改值), list(搜索配置项)"),
+                    "key" to mapOf("type" to "string", "description" to "配置键名，例如 'anal.strings' 或 'anal.in'"),
+                    "value" to mapOf("type" to "string", "description" to "要设置的新值 (仅 set 模式需要)。例如 'true', 'false', 'io.maps'"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("action", "key", "session_id")
+            ),
+            createToolSchema(
+                "r2_analysis_hints",
+                "🔧 [分析提示] 管理分析提示 (Analysis Hints)。用于手动修正 R2 的分析错误，或优化反汇编显示。\n" +
+                "当反汇编结果看起来不对（如代码被当成数据）、立即数格式难以理解（如需要看 IP 地址/十进制）、或控制流中断时使用。\n" +
+                "操作说明：\n" +
+                "- 'list' (ah): 列出当前地址的提示。\n" +
+                "- 'set_base' (ahi): 修改立即数显示进制 (value='10'十进制, '16'十六进制, 's'字符串, 'i'IP地址)。\n" +
+                "- 'set_arch' (aha): 强制指定后续代码的架构 (value='arm', 'x86')。\n" +
+                "- 'set_bits' (ahb): 强制指定位数 (value='16', '32', '64')。\n" +
+                "- 'override_jump' (ahc): 强制指定 Call/Jmp 的跳转目标地址 (修复间接跳转)。\n" +
+                "- 'override_opcode' (ahd): 直接用自定义字符串替换当前指令显示的文本。\n" +
+                "- 'remove' (ah-): 清除当前地址的所有提示。",
+                mapOf(
+                    "action" to mapOf("type" to "string", "enum" to listOf("list", "set_base", "set_arch", "set_bits", "override_jump", "override_opcode", "remove"), "description" to "提示操作类型"),
+                    "address" to mapOf("type" to "string", "description" to "可选：目标地址（默认为当前光标位置）。"),
+                    "value" to mapOf("type" to "string", "description" to "参数值。例如进制类型('10', 's')、架构名、跳转目标地址或替换的指令字符串。"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("action", "session_id")
+            ),
+            createToolSchema(
+    "os_list_dir",
+    "📁 [文件列出] 列出目录内容。能力：自动识别并使用 Root 权限。\n" +
+    "技巧：如果不确定 Native 库位置，请先列出 '/data/app/' 目录，找到对应的包名目录（通常包含随机字符），进入后再找 'lib' 目录。",
+    mapOf(
+        "path" to mapOf("type" to "string", "description" to "目录路径")
+    ),
+    listOf("path")
+),
+            createToolSchema(
+    "r2_open_file",
+    "📄 [读取文件] 读取文件内容。支持 Root。\n" +
+    "路径警告：Android 的库文件通常位于 '/data/app/~~[随机串]/[包名]-[随机串]/lib/arm64/'，而不是 '/data/data'。\n" +
+    "请先使用 os_list_dir('/data/app') 找到正确的安装路径。",
+    mapOf(
+        "file_path" to mapOf("type" to "string", "description" to "文件路径"),
+        "auto_analyze" to mapOf("type" to "boolean", "description" to "是否自动分析", "default" to true)
+    ),
+    listOf("file_path")
+),
+            createToolSchema(
+                "termux_command", 
+                "💻 [Shell] 在 Termux 环境中执行系统命令 (Python, Node, Curl, SQLCipher 等)。\n" +
+                "环境：已自动注入 PATH 和 LD_LIBRARY_PATH，可直接运行 'python script.py'。\n" +
+                "权限：\n" +
+                "- use_root=false (默认): 以 Termux 普通用户运行，更安全。\n" +
+                "- use_root=true: 仅在需要读取系统数据库时开启。",
+                mapOf(
+                    "command" to mapOf("type" to "string", "description" to "Shell 命令"),
+                    "use_root" to mapOf("type" to "boolean", "description" to "是否提权", "default" to false)
+                ), 
+                listOf("command")
+            ),
+            createToolSchema(
+                "termux_save_script", 
+                "💾 [编程] 将代码保存到 AI 专属沙盒目录 ($TERMUX_AI_DIR)。\n" +
+                "特性：自动创建目录、自动赋予执行权限 (+x)、自动修正文件所有者。\n" +
+                "用法：保存后，立即使用 termux_command('python filename.py') 运行。",
+                mapOf(
+                    "filename" to mapOf("type" to "string", "description" to "纯文件名 (例如 'scan.py')"),
+                    "content" to mapOf("type" to "string", "description" to "代码内容")
+                ), 
+                listOf("filename", "content")
+            ),
+            createToolSchema(
+                "sqlite_query",
+                "🗄️ [数据库] 使用系统内置 sqlite3 工具执行 SQL 查询。支持 Root 权限，可直接读取 /data/data 下的私有数据库。请务必使用 LIMIT 限制返回行数，防止输出过大。",
+                mapOf(
+                    "db_path" to mapOf("type" to "string", "description" to "数据库文件的绝对路径 (如 /data/data/com.xxx/databases/msg.db)"),
+                    "query" to mapOf("type" to "string", "description" to "要执行的 SQL 语句 (如 'SELECT * FROM user LIMIT 10;')")
+                ),
+                listOf("db_path", "query")
+            ),
+             createToolSchema(
+                "r2_test",
+                "🧪 [诊断工具] 测试 Radare2 库是否正常工作。",
+                mapOf(),
+                listOf()
+            )
+        )
+        
+        return buildJsonObject {
+            put("tools", JsonArray(tools.map { tool ->
+                buildJsonObject {
+                    put("name", tool.name)
+                    put("description", tool.description)
+                    put("inputSchema", tool.inputSchema)
+                }
+            }))
+        }
+    }
+
+    private fun createToolSchema(
+        name: String,
+        description: String,
+        properties: Map<String, Map<String, Any>>,
+        required: List<String>
+    ): ToolInfo {
+        val schema = buildJsonObject {
+            put("type", "object")
+            put("properties", buildJsonObject {
+                properties.forEach { (key, value) ->
+                    put(key, buildJsonObject {
+                        value.forEach { (k, v) ->
+                            when (v) {
+                                is String -> put(k, v)
+                                is Int -> put(k, v)
+                                is Boolean -> put(k, v)
+                                is List<*> -> put(k, JsonArray(v.map { JsonPrimitive(it.toString()) }))
+                                else -> put(k, v.toString())
+                            }
+                        }
+                    })
+                }
+            })
+            put("required", JsonArray(required.map { JsonPrimitive(it) }))
+        }
+        
+        return ToolInfo(name, description, schema)
+    }
+
+    private suspend fun handleToolCall(params: JsonObject?, onLogEvent: (String) -> Unit): JsonElement {
+        if (params == null) {
+            return createToolResult(false, error = "Missing params")
+        }
+
+        val toolName = params["name"]?.jsonPrimitive?.content 
+            ?: return createToolResult(false, error = "Missing tool name")
+        
+        val rawArgs = params["arguments"]
+        val args: JsonObject = try {
+    when (rawArgs) {
+        is JsonObject -> rawArgs
+        is JsonPrimitive -> {
+            if (rawArgs.isString) {
+                // AI 有时会把 JSON 对象发成字符串，这里尝试二次解析
+                json.decodeFromString<JsonObject>(rawArgs.content)
+            } else {
+                JsonObject(emptyMap()) // 空参数
+            }
+        }
+        else -> JsonObject(emptyMap())
+    }
+} catch (e: Exception) {
+    // 如果解析失败，记录日志并返回空对象，避免 Crash
+    logError("参数解析失败", e.message)
+    JsonObject(emptyMap())
+}
+
+        logInfo("执行工具: $toolName")
+        onLogEvent("执行: $toolName")
+
+        return try {
+            val result = when (toolName) {
+                // --- [新增] 分发逻辑 ---
+                "termux_command" -> runBlocking { executeTermuxCommand(args) }
+                "termux_save_script" -> runBlocking { executeSaveScript(args) }
+                "r2_open_file" -> executeOpenFile(args, onLogEvent)
+                "r2_analyze_file" -> executeAnalyzeFile(args, onLogEvent)
+                "r2_run_command" -> executeCommand(args)
+                "r2_list_functions" -> executeListFunctions(args)
+                "r2_list_strings" -> executeListStrings(args)
+                "r2_get_xrefs" -> executeGetXrefs(args)
+                "r2_get_info" -> executeGetInfo(args)
+                "r2_decompile_function" -> executeDecompileFunction(args)
+                "r2_disassemble" -> executeDisassemble(args)
+                "r2_test" -> executeTestR2(args)
+                "r2_close_session" -> executeCloseSession(args)
+                "r2_analyze_target" -> executeAnalyzeTarget(args)
+                "r2_manage_xrefs" -> executeManageXrefs(args)
+                "r2_config_manager" -> executeConfigManager(args)
+                "r2_analysis_hints" -> executeAnalysisHints(args)
+                "sqlite_query" -> executeSqliteQuery(args)
+                "os_list_dir" -> executeOsListDir(args)
+                "os_read_file" -> executeOsReadFile(largs)
+                else -> createToolResult(false, error = "Unknown tool: $toolName")
+            }
+            fixContentFormat(result)
+        } catch (e: Exception) {
+            logError("工具执行异常: $toolName", e.message)
+            createToolResult(false, error = e.message ?: "Unknown error")
+        }
+    }
+
+    private fun createToolResult(
+        success: Boolean,
+        output: String? = null,
+        error: String? = null
+    ): JsonElement {
+        return buildJsonObject {
+            put("content", JsonArray(listOf(
+                buildJsonObject {
+                    put("type", "text")
+                    put("text", output ?: error ?: "")
+                }
+            )))
+            put("isError", !success)
+        }
+    }
+
+    private fun fixContentFormat(result: JsonElement): JsonElement {
+        if (result !is JsonObject) return result
+        
+        val content = result["content"]?.jsonArray ?: return result
+        
+        val fixedContent = content.map { item ->
+            when {
+                item is JsonPrimitive && item.isString -> {
+                    val text = item.content
+                    if (text.length > 30) {
+                        logInfo("[自动修复格式] ${text.take(30)}...")
+                    }
+                    buildJsonObject {
+                        put("type", "text")
+                        put("text", text)
+                    }
+                }
+                else -> item
+            }
+        }
+        
+        return buildJsonObject {
+            result.forEach { (key, value) ->
+                if (key == "content") {
+                    put("content", JsonArray(fixedContent))
+                } else {
+                    put(key, value)
+                }
             }
         }
     }
 
-    private fun updateCurrentCommand(command: String) {
-        currentCommand = command
-        val notification = createNotification()
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification)
+    private suspend fun executeOpenFile(args: JsonObject, onLogEvent: (String) -> Unit): JsonElement {
+        val filePath = args["file_path"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing file_path")
+        
+        val autoAnalyze = args["auto_analyze"]?.jsonPrimitive?.booleanOrNull ?: true
+        
+        val file = java.io.File(filePath)
+        if (!file.exists()) {
+            logInfo("文件不存在或无权限访问，尝试 Root 复制: $filePath")
+            val copyPath = tryRootCopy(filePath)
+            if (copyPath != null) {
+                logInfo("Root 复制成功，使用副本继续: $copyPath")
+                val copyFile = java.io.File(copyPath)
+                if (!copyFile.exists()) {
+                    logError("Root 复制后副本文件不存在", copyPath)
+                    return createToolResult(false, error = "Failed to create accessible copy of file: $filePath")
+                }
+                return executeOpenFileWithFile(copyFile, copyPath, autoAnalyze, onLogEvent)
+            } else {
+                logError("文件不存在且 Root 复制失败", filePath)
+                return createToolResult(false, error = "File does not exist or no permission to access: $filePath")
+            }
+        }
+        
+        var sessionId = args["session_id"]?.jsonPrimitive?.content
+        var session = if (sessionId != null) R2SessionManager.getSession(sessionId) else null
+        
+        if (session == null) {
+            // 创建新会话
+            val corePtr = R2Core.initR2Core()
+            if (corePtr == 0L) {
+                logError("R2 Core 初始化失败")
+                return createToolResult(false, error = "Failed to initialize R2 core")
+            }
+            
+            val opened = R2Core.openFile(corePtr, filePath)
+            if (!opened) {
+                logInfo("文件打开失败，尝试 Root 复制: $filePath")
+                val copyPath = tryRootCopy(filePath)
+                if (copyPath != null) {
+                    logInfo("使用 Root 复制的副本重试: $copyPath")
+                    val copyOpened = R2Core.openFile(corePtr, copyPath)
+                    if (copyOpened) {
+                        logInfo("Root 复制副本打开成功")
+                        sessionId = R2SessionManager.createSession(copyPath, corePtr)
+                        session = R2SessionManager.getSession(sessionId)!!
+                        logInfo("创建新会话 (使用副本): $sessionId")
+                    } else {
+                        R2Core.closeR2Core(corePtr)
+                        logError("Root 复制副本也无法打开", copyPath)
+                        return createToolResult(false, error = "Failed to open file (root copy failed): $copyPath")
+                    }
+                } else {
+                    R2Core.closeR2Core(corePtr)
+                    logError("打开文件失败且 Root 复制失败", filePath)
+                    return createToolResult(false, error = "Failed to open file: $filePath")
+                }
+            } else {
+                sessionId = R2SessionManager.createSession(filePath, corePtr)
+                session = R2SessionManager.getSession(sessionId)!!
+                logInfo("创建新会话: $sessionId")
+            }
+        } else {
+            // [补全功能 1]：如果传入了有效的 session_id，则在现有会话中打开文件
+            logInfo("复用现有会话: $sessionId，尝试打开文件: $filePath")
+            val opened = R2Core.openFile(session.corePtr, filePath)
+            if (!opened) {
+                logInfo("文件打开失败，尝试 Root 复制并复用会话...")
+                val copyPath = tryRootCopy(filePath)
+                if (copyPath != null) {
+                    val copyOpened = R2Core.openFile(session.corePtr, copyPath)
+                    if (copyOpened) {
+                        logInfo("复用会话打开 Root 副本成功: $copyPath")
+                    } else {
+                         return createToolResult(false, error = "Failed to open file in existing session: $filePath")
+                    }
+                } else {
+                     return createToolResult(false, error = "Failed to open file in existing session: $filePath")
+                }
+            }
+        }
+
+        val analysisResult = if (autoAnalyze) {
+            logInfo("执行基础分析 (aa)...")
+            val startTime = System.currentTimeMillis()
+            val output = R2Core.executeCommand(session!!.corePtr, "aa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("分析完成，耗时 ${duration}ms")
+            "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
+        } else {
+            "\n[跳过自动分析]"
+        }
+
+        val info = R2Core.executeCommand(session!!.corePtr, "i")
+        
+        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
+    }
+
+    private suspend fun executeOpenFileWithFile(file: java.io.File, filePath: String, autoAnalyze: Boolean, onLogEvent: (String) -> Unit): JsonElement {
+        var sessionId: String
+        var session = R2SessionManager.getSessionByFilePath(filePath)
+        
+        if (session == null) {
+            val corePtr = R2Core.initR2Core()
+            if (corePtr == 0L) {
+                logError("R2 Core 初始化失败")
+                return createToolResult(false, error = "Failed to initialize R2 core")
+            }
+            
+            val opened = R2Core.openFile(corePtr, filePath)
+            if (!opened) {
+                R2Core.closeR2Core(corePtr)
+                logError("打开文件失败", filePath)
+                return createToolResult(false, error = "Failed to open file: $filePath")
+            }
+            
+            sessionId = R2SessionManager.createSession(filePath, corePtr)
+            session = R2SessionManager.getSession(sessionId)!!
+            logInfo("创建新会话: $sessionId")
+        } else {
+            sessionId = session.sessionId
+            logInfo("使用现有会话: $sessionId")
+        }
+
+        val analysisResult = if (autoAnalyze) {
+            logInfo("执行基础分析 (aa)...")
+            val startTime = System.currentTimeMillis()
+            val output = R2Core.executeCommand(session!!.corePtr, "aa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("分析完成，耗时 ${duration}ms")
+            "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
+        } else {
+            "\n[跳过自动分析]"
+        }
+
+        val info = R2Core.executeCommand(session!!.corePtr, "i")
+        
+        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
+    }
+
+    private suspend fun executeAnalyzeFile(args: JsonObject, onLogEvent: (String) -> Unit): JsonElement {
+        val filePath = args["file_path"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing file_path")
+            
+        // [补全功能 2]: 优先检查是否传入了 session_id
+        val explicitSessionId = args["session_id"]?.jsonPrimitive?.content
+        if (explicitSessionId != null) {
+            val existingSession = R2SessionManager.getSession(explicitSessionId)
+            if (existingSession != null) {
+                logInfo("使用指定会话进行分析: $explicitSessionId")
+                
+                logInfo("执行深度分析 (aaa)...")
+                val startTime = System.currentTimeMillis()
+                R2Core.executeCommand(existingSession.corePtr, "aaa")
+                val duration = System.currentTimeMillis() - startTime
+                
+                val info = R2Core.executeCommand(existingSession.corePtr, "i")
+                val funcs = R2Core.executeCommand(existingSession.corePtr, "afl~?")
+                
+                return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[指定会话深度分析]\nFile: $filePath\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+            }
+        }
+        
+        val file = java.io.File(filePath)
+        if (!file.exists()) {
+            logInfo("文件不存在或无权限访问，尝试 Root 复制: $filePath")
+            val copyPath = tryRootCopy(filePath)
+            if (copyPath != null) {
+                logInfo("Root 复制成功，使用副本继续: $copyPath")
+                val copyFile = java.io.File(copyPath)
+                if (!copyFile.exists()) {
+                    logError("Root 复制后副本文件不存在", copyPath)
+                    return createToolResult(false, error = "Failed to create accessible copy of file: $filePath")
+                }
+                return executeAnalyzeFileWithFile(copyFile, copyPath, onLogEvent)
+            } else {
+                logError("文件不存在且 Root 复制失败", filePath)
+                return createToolResult(false, error = "File does not exist or no permission to access: $filePath")
+            }
+        }
+        
+        logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
+
+        val existingSession = R2SessionManager.getSessionByFilePath(file.absolutePath)
+        if (existingSession != null) {
+            logInfo("文件已被会话 ${existingSession.sessionId} 打开，执行深度分析")
+            
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(existingSession.corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            
+            val info = R2Core.executeCommand(existingSession.corePtr, "i")
+            val funcs = R2Core.executeCommand(existingSession.corePtr, "afl~?")
+            
+            return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[复用现有会话]\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        }
+
+        val corePtr = R2Core.initR2Core()
+        if (corePtr == 0L) {
+            logError("R2 Core 初始化失败")
+            return createToolResult(false, error = "Failed to initialize R2 core")
+        }
+
+        try {
+            val opened = R2Core.openFile(corePtr, file.absolutePath)
+            if (!opened) {
+                val copyPath = tryRootCopy(file.absolutePath)
+                if (copyPath != null) {
+                    logInfo("使用 Root 复制的副本重试分析: $copyPath")
+                    val copyOpened = R2Core.openFile(corePtr, copyPath)
+                    if (copyOpened) {
+                        logInfo("Root 复制副本打开成功，开始深度分析")
+                        val copyFile = File(copyPath)
+                        val sessionId = R2SessionManager.createSession(copyPath, corePtr)
+
+                        logInfo("执行深度分析 (aaa)...")
+                        val startTime = System.currentTimeMillis()
+                        R2Core.executeCommand(corePtr, "aaa")
+                        val duration = System.currentTimeMillis() - startTime
+                        logInfo("深度分析完成，耗时 ${duration}ms")
+
+                        val info = R2Core.executeCommand(corePtr, "i")
+                        val funcs = R2Core.executeCommand(corePtr, "afl~?")
+
+                        logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
+                        return createToolResult(true, output = "Session: $sessionId\n\n[使用 Root 复制副本]\nOriginal: ${file.absolutePath}\nCopy: $copyPath\nSize: ${copyFile.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+                    } else {
+                        logError("Root 复制副本也无法打开", copyPath)
+                    }
+                }
+
+                logError("打开文件失败且 Root 复制失败", file.absolutePath)
+                R2Core.closeR2Core(corePtr)
+                return createToolResult(false, error = "Failed to open file: ${file.absolutePath}")
+            }
+
+            val sessionId = R2SessionManager.createSession(file.absolutePath, corePtr)
+
+            logInfo("执行深度分析 (aaa)...")
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("深度分析完成，耗时 ${duration}ms")
+
+            val info = R2Core.executeCommand(corePtr, "i")
+            val funcs = R2Core.executeCommand(corePtr, "afl~?")
+
+            logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
+            return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        } catch (e: Exception) {
+            logError("分析过程异常", e.message)
+            R2Core.closeR2Core(corePtr)
+            return createToolResult(false, error = "Exception during analysis: ${e.message}")
+        }
+    }
+
+    private suspend fun executeAnalyzeFileWithFile(file: java.io.File, filePath: String, onLogEvent: (String) -> Unit): JsonElement {
+        logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
+
+        val existingSession = R2SessionManager.getSessionByFilePath(file.absolutePath)
+        if (existingSession != null) {
+            logInfo("文件已被会话 ${existingSession.sessionId} 打开，执行深度分析")
+            
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(existingSession.corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            
+            val info = R2Core.executeCommand(existingSession.corePtr, "i")
+            val funcs = R2Core.executeCommand(existingSession.corePtr, "afl~?")
+            
+            return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[复用现有会话]\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        }
+
+        val corePtr = R2Core.initR2Core()
+        if (corePtr == 0L) {
+            logError("R2 Core 初始化失败")
+            return createToolResult(false, error = "Failed to initialize R2 core")
+        }
+
+        try {
+            val opened = R2Core.openFile(corePtr, filePath)
+            if (!opened) {
+                R2Core.closeR2Core(corePtr)
+                logError("打开文件失败", filePath)
+                return createToolResult(false, error = "Failed to open file: $filePath")
+            }
+
+            val sessionId = R2SessionManager.createSession(filePath, corePtr)
+
+            logInfo("执行深度分析 (aaa)...")
+            val startTime = System.currentTimeMillis()
+            R2Core.executeCommand(corePtr, "aaa")
+            val duration = System.currentTimeMillis() - startTime
+            logInfo("深度分析完成，耗时 ${duration}ms")
+
+            val info = R2Core.executeCommand(corePtr, "i")
+            val funcs = R2Core.executeCommand(corePtr, "afl~?")
+
+            logInfo("分析完成，Session ID: $sessionId, 函数数量: $funcs")
+            return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+        } catch (e: Exception) {
+            logError("分析过程异常", e.message)
+            R2Core.closeR2Core(corePtr)
+            return createToolResult(false, error = "Exception during analysis: ${e.message}")
+        }
+    }
+
+    private suspend fun executeCommand(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        val command = args["command"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing command")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        logInfo("执行命令: $command (Session: ${sessionId.take(16)})")
+        
+        val rawResult = R2Core.executeCommand(session.corePtr, command)
+        
+        val result = sanitizeOutput(rawResult, maxLines = 1000, maxChars = 20000)
+        
+        if (result.length > 200) {
+            logInfo("命令返回: ${result.length} bytes")
+        }
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeListFunctions(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        
+        val filter = args["filter"]?.jsonPrimitive?.content ?: ""
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 500
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = if (filter.isBlank()) "afl" else "afl~$filter"
+        
+        logInfo("列出函数 (过滤: '$filter', 限制: $limit, Session: ${sessionId.take(16)})")
+        
+        val rawResult = R2Core.executeCommand(session.corePtr, command)
+        
+        val result = sanitizeOutput(rawResult, maxLines = limit, maxChars = 16000)
+        
+        return createToolResult(true, output = result)
     }
     
-    private fun broadcastLogEvent(message: String) {
-        Log.d("R2Service", "broadcastLogEvent: 发送广播 message=$message")
-        val intent = Intent(ACTION_LOG_EVENT).apply {
-            putExtra(EXTRA_LOG_MESSAGE, message)
-            setPackage(packageName) // 显式设置包名
+    private suspend fun executeListStrings(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val mode = args["mode"]?.jsonPrimitive?.content ?: "data"
+        val minLength = args["min_length"]?.jsonPrimitive?.intOrNull ?: 5
+        
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = when (mode) {
+            "all" -> "izz"
+            else -> "iz"
         }
-        sendBroadcast(intent)
-        Log.d("R2Service", "broadcastLogEvent: 广播已发送")
+        
+        logInfo("列出字符串 (模式: $mode, 最小长度: $minLength, Session: ${sessionId.take(16)})")
+        
+        // [补全功能 3]：使用 R2 原生配置进行过滤，防止内存爆炸
+        R2Core.executeCommand(session.corePtr, "e bin.str.min=$minLength")
+        
+        val rawOutput = R2Core.executeCommand(session.corePtr, command)
+        
+        val cleanOutput = rawOutput.lineSequence()
+            .filter { line ->
+                !line.contains(".eh_frame") && 
+                !line.contains(".gcc_except_table") &&
+                !line.contains(".text") &&
+                !line.contains("libunwind")
+            }
+            .filter { line ->
+                line.trim().length > 20 || 
+                line.split("ascii", "utf8", "utf16", "utf32").lastOrNull()?.trim()?.length ?: 0 >= minLength
+            }
+            .joinToString("\n")
+
+        val finalOutput = if (cleanOutput.isBlank()) {
+            "No meaningful strings found (filters active: min_len=$minLength, exclude=.text/.eh_frame)"
+        } else {
+            sanitizeOutput(cleanOutput, maxLines = 500, maxChars = 16000)
+        }
+        
+        return createToolResult(true, output = finalOutput)
     }
 
-    private fun getLocalIpAddress(): String {
-        try {
-            val interfaces = NetworkInterface.getNetworkInterfaces()
-            while (interfaces.hasMoreElements()) {
-                val networkInterface = interfaces.nextElement()
-                val addresses = networkInterface.inetAddresses
-                while (addresses.hasMoreElements()) {
-                    val address = addresses.nextElement()
-                    if (!address.isLoopbackAddress && address is Inet4Address) {
-                        return address.hostAddress ?: "未知"
+    private suspend fun executeDecompileFunction(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        val address = args["address"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing address")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val info = R2Core.executeCommand(session.corePtr, "afi @ $address")
+        val size = info.lines()
+            .find { it.trim().startsWith("size:") }
+            ?.substringAfter(":")
+            ?.trim()
+            ?.toLongOrNull() ?: 0
+                    
+        if (size > 10000) {
+            logInfo("函数过大 ($address, size: $size bytes)，跳过反编译")
+            return createToolResult(true, output = "⚠️ 函数过大 (Size: $size bytes)，反编译可能导致超时或不准确。\n\n建议先使用 r2_disassemble 查看局部汇编，或使用 r2_run_command 执行 'pdf @ $address' 查看函数结构。")
+        }
+
+        logInfo("反编译函数: $address (size: $size bytes, Session: ${sessionId.take(16)})")
+        
+        val rawCode = R2Core.executeCommand(session.corePtr, "pdc @ $address")
+        
+        val result = sanitizeOutput(rawCode, maxLines = 500, maxChars = 15000)
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeDisassemble(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        val address = args["address"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing address")
+        val lines = args["lines"]?.jsonPrimitive?.intOrNull ?: 10
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        logInfo("反汇编: $address ($lines 行)")
+        
+        val result = R2Core.executeCommand(session.corePtr, "pd $lines @ $address")
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeCloseSession(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.removeSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        logInfo("关闭会话: $sessionId (文件: ${session.filePath})")
+        
+        return createToolResult(true, output = "Session closed: $sessionId")
+    }
+    
+    private suspend fun executeTestR2(args: JsonObject): JsonElement {
+        logInfo("执行 R2 测试")
+        
+        return try {
+            val testResult = R2Core.testR2()
+            logInfo("R2 测试完成")
+            createToolResult(true, output = testResult)
+        } catch (e: Exception) {
+            logError("R2 测试失败", e.message)
+            createToolResult(false, error = "R2 test failed: ${e.message}\n${e.stackTraceToString()}")
+        }
+    }
+
+    private suspend fun executeGetXrefs(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        
+        val address = args["address"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing address")
+        
+        val direction = args["direction"]?.jsonPrimitive?.content ?: "to"
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = when (direction) {
+            "from" -> "axf @ $address"
+            else -> "axt @ $address"
+        }
+        
+        logInfo("获取交叉引用 (地址: $address, 方向: $direction, 限制: $limit, Session: ${sessionId.take(16)})")
+        
+        val rawResult = R2Core.executeCommand(session.corePtr, command)
+        
+        val result = sanitizeOutput(rawResult, maxLines = limit, maxChars = 8000)
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeGetInfo(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+        
+        val detailed = args["detailed"]?.jsonPrimitive?.booleanOrNull ?: false
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = if (detailed) "iI" else "i"
+        
+        logInfo("获取文件信息 (详细: $detailed, Session: ${sessionId.take(16)})")
+        
+        val result = R2Core.executeCommand(session.corePtr, command)
+        
+        return createToolResult(true, output = result)
+    }
+
+    private suspend fun executeOsListDir(args: JsonObject): JsonElement {
+        val pathStr = args["path"]?.jsonPrimitive?.content ?: "/"
+        val dir = java.io.File(pathStr)
+        val resultLines = mutableListOf<String>()
+        var usedRoot = false
+
+        val files = dir.listFiles()
+        if (files != null) {
+            files.forEach { file ->
+                val type = if (file.isDirectory) "[DIR] " else "[FILE]"
+                val size = if (file.isFile) String.format("%-8s", "(${file.length()})") else "        "
+                resultLines.add("$type $size ${file.name}")
+            }
+        } else {
+            val cmd = "ls -p \"$pathStr\""
+            val output = ShellUtils.execCommand(cmd, isRoot = true)
+
+            if (output.isSuccess) {
+                usedRoot = true
+                output.successMsg.lines().forEach { line ->
+                    if (line.isNotBlank()) {
+                        val type = if (line.endsWith("/")) "[DIR] " else "[FILE]"
+                        val name = line.removeSuffix("/")
+                        resultLines.add("$type $name")
                     }
                 }
+            } else {
+                return createToolResult(false, error = "❌ 无法访问目录: $pathStr\n错误信息: ${output.errorMsg}")
             }
-        } catch (e: Exception) {
-            return "未知"
         }
-        return "未知"
+
+        val header = if (usedRoot) "=== 目录列表 (Root Access) ===\n" else "=== 目录列表 ===\n"
+        val body = if (resultLines.isEmpty()) "(目录为空)" else resultLines.joinToString("\n")
+
+        return createToolResult(true, output = header + body)
+    }
+
+    private suspend fun executeOsReadFile(args: JsonObject): JsonElement {
+        val pathStr = args["path"]?.jsonPrimitive?.content
+        if (pathStr.isNullOrEmpty()) {
+            return createToolResult(false, error = "Path is required")
+        }
+
+        val file = java.io.File(pathStr)
+        var content = ""
+        var source = "Standard API"
+
+        if (file.exists() && file.canRead()) {
+            try {
+                content = file.readText()
+            } catch (e: Exception) {
+            }
+        }
+
+        if (content.isEmpty()) {
+            val output = ShellUtils.execCommand("cat \"$pathStr\"", isRoot = true)
+            if (output.isSuccess) {
+                content = output.successMsg
+                source = "Root Access"
+            } else {
+                return createToolResult(false, error = "❌ 读取文件失败: $pathStr\nPermission denied & Root failed.")
+            }
+        }
+
+        val limit = 50000 
+        val truncatedNote = if (content.length > limit) {
+            content = content.take(limit)
+            "\n\n[⚠️ SYSTEM: 文件过大，已截断显示前 50KB 内容]"
+        } else ""
+
+        return createToolResult(true, output = "($source)\n$content$truncatedNote")
+    }
+
+    private suspend fun executeAnalyzeTarget(args: JsonObject): JsonElement {
+        val strategy = args["strategy"]?.jsonPrimitive?.content ?: "basic"
+        val address = args["address"]?.jsonPrimitive?.content
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val addrSuffix = if (!address.isNullOrEmpty()) " @ $address" else ""
+
+        val cmd = when (strategy) {
+            "basic" -> "aa"
+            "blocks" -> "aab$addrSuffix"
+            "calls" -> "aac$addrSuffix"
+            "refs" -> "aar$addrSuffix"
+            "pointers" -> "aad$addrSuffix"
+            "full" -> "aaa"
+            else -> "aa"
+        }
+
+        logInfo("执行智能分析策略: $strategy (命令: $cmd, 会话: ${sessionId.take(16)})")
+
+        val startTime = System.currentTimeMillis()
+        val analysisOutput = R2Core.executeCommand(session.corePtr, cmd)
+        val duration = System.currentTimeMillis() - startTime
+        logInfo("分析完成，耗时 ${duration}ms")
+
+        val funcCount = R2Core.executeCommand(session.corePtr, "afl~?").trim()
+        val codeSize = R2Core.executeCommand(session.corePtr, "?v \$SS").trim()
+
+        val resultMsg = StringBuilder()
+        resultMsg.append("✅ 分析策略 '$strategy' 执行完毕 (Cmd: $cmd, 耗时: ${duration}ms)。\n")
+        resultMsg.append("📊 当前状态：\n")
+        resultMsg.append("- 已识别函数数: $funcCount\n")
+        resultMsg.append("- 代码段大小: $codeSize bytes\n")
+
+        when (strategy) {
+            "calls" -> resultMsg.append("💡 提示：如果函数数量增加了，说明发现了新的子函数。")
+            "pointers" -> resultMsg.append("💡 提示：请检查数据段是否识别出了新的 xref。")
+            "blocks" -> resultMsg.append("💡 提示：函数基本块结构已优化，可能修复了截断问题。")
+            "refs" -> resultMsg.append("💡 提示：数据引用已分析，可用于查找字符串和全局变量。")
+            "full" -> resultMsg.append("⚠️ 注意：全量分析已完成，可能耗时较长。")
+            else -> resultMsg.append("💡 提示：基础分析已完成，识别了符号和入口点。")
+        }
+
+        if (analysisOutput.isNotBlank()) {
+            resultMsg.append("\n\n=== 分析输出 ===\n$analysisOutput")
+        }
+
+        return createToolResult(true, output = resultMsg.toString())
+    }
+
+    private suspend fun executeManageXrefs(args: JsonObject): JsonElement {
+        val action = args["action"]?.jsonPrimitive?.content ?: "list_to"
+        val target = args["target_address"]?.jsonPrimitive?.content ?: ""
+        val source = args["source_address"]?.jsonPrimitive?.content
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        if (target.isEmpty()) {
+            return createToolResult(false, error = "必须指定目标地址 (target_address)")
+        }
+
+        val atSuffix = if (!source.isNullOrEmpty()) " $source" else ""
+
+        logInfo("执行交叉引用管理: $action (目标: $target, 源: ${source ?: "当前位置"}, 会话: ${sessionId.take(16)})")
+
+        val resultText = when (action) {
+            "list_to" -> {
+                val json = R2Core.executeCommand(session.corePtr, "axtj $target")
+                formatXrefs(json, "引用了 $target 的位置 (Xrefs TO)")
+            }
+            "list_from" -> {
+                val json = R2Core.executeCommand(session.corePtr, "axfj $target")
+                formatXrefs(json, "$target 引用了哪些位置 (Xrefs FROM)")
+            }
+            "add_code" -> runR2Action(session, "axc $target$atSuffix", "已添加代码引用")
+            "add_call" -> runR2Action(session, "axC $target$atSuffix", "已添加函数调用引用")
+            "add_data" -> runR2Action(session, "axd $target$atSuffix", "已添加数据引用")
+            "add_string" -> runR2Action(session, "axs $target$atSuffix", "已添加字符串引用")
+            "remove_all" -> runR2Action(session, "ax- $target", "已清除该地址的所有引用")
+            else -> "❌ 未知操作: $action"
+        }
+
+        return createToolResult(true, output = resultText)
+    }
+
+    private suspend fun executeConfigManager(args: JsonObject): JsonElement {
+        val action = args["action"]?.jsonPrimitive?.content ?: "get"
+        val key = args["key"]?.jsonPrimitive?.content ?: ""
+        val value = args["value"]?.jsonPrimitive?.content ?: ""
+
+        if (key.isEmpty()) {
+            return createToolResult(false, error = "必须指定配置键名 (key)")
+        }
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        logInfo("执行配置管理: $action (键: $key, 值: $value, 会话: ${sessionId.take(16)})")
+
+        val resultText = when (action) {
+            "get" -> {
+                val output = R2Core.executeCommand(session.corePtr, "e $key").trim()
+                if (output.isEmpty()) {
+                    "⚠️ 未找到配置项: $key"
+                } else {
+                    "$key = $output"
+                }
+            }
+            "set" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "set 操作需要指定值 (value)")
+                }
+                R2Core.executeCommand(session.corePtr, "e $key=$value")
+
+                val current = R2Core.executeCommand(session.corePtr, "e $key").trim()
+                if (current == value || (value == "true" && current == "true") || (value == "false" && current == "false")) {
+                    "✅ 配置已更新: $key = $current"
+                } else {
+                    "⚠️ 配置更新可能失败，当前值: $key = $current"
+                }
+            }
+            "list" -> {
+                val output = R2Core.executeCommand(session.corePtr, "e? $key")
+                "🔎 搜索 '$key' 的结果:\n$output"
+            }
+            else -> "❌ 未知操作: $action"
+        }
+
+        return createToolResult(true, output = resultText)
+    }
+
+    private suspend fun executeAnalysisHints(args: JsonObject): JsonElement {
+        val action = args["action"]?.jsonPrimitive?.content ?: "list"
+        val address = args["address"]?.jsonPrimitive?.content ?: ""
+        val value = args["value"]?.jsonPrimitive?.content ?: ""
+
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val addrSuffix = if (address.isNotEmpty()) " @ $address" else ""
+        val checkAddr = address
+
+        logInfo("执行分析提示: $action (地址: ${address.ifEmpty { "当前位置" }}, 值: $value, 会话: ${sessionId.take(16)})")
+
+        val resultText = when (action) {
+            "list" -> {
+                val output = R2Core.executeCommand(session.corePtr, "ah$addrSuffix").trim()
+                if (output.isBlank()) {
+                    "ℹ️ 该地址没有分析提示。"
+                } else {
+                    output
+                }
+            }
+            "set_base" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定进制类型 (value)，如 10, 16, s, i")
+                }
+                R2Core.executeCommand(session.corePtr, "ahi $value$addrSuffix")
+                "✅ 已修改数值显示格式为 '$value'"
+            }
+            "set_arch" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定架构 (value)，如 arm, x86")
+                }
+                R2Core.executeCommand(session.corePtr, "aha $value$addrSuffix")
+                "✅ 已强制设置架构为 '$value'"
+            }
+            "set_bits" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定位数 (value)，如 32, 64")
+                }
+                R2Core.executeCommand(session.corePtr, "ahb $value$addrSuffix")
+                "✅ 已强制设置位数为 '$value' bits"
+            }
+            "override_jump" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定跳转目标地址 (value)")
+                }
+                R2Core.executeCommand(session.corePtr, "ahc $value$addrSuffix")
+                "✅ 已强制覆盖跳转目标为 $value"
+            }
+            "override_opcode" -> {
+                if (value.isEmpty()) {
+                    return createToolResult(false, error = "必须指定新的指令字符串 (value)")
+                }
+                R2Core.executeCommand(session.corePtr, "ahd $value$addrSuffix")
+                "✅ 已将指令文本替换为: \"$value\""
+            }
+            "remove" -> {
+                R2Core.executeCommand(session.corePtr, "ah-$addrSuffix")
+                "✅ 已清除该地址的分析提示"
+            }
+            else -> "❌ 未知操作: $action"
+        }
+
+        val previewCmd = if (checkAddr.isNotEmpty()) "pd 1 @ $checkAddr" else "pd 1"
+        val preview = R2Core.executeCommand(session.corePtr, previewCmd).trim()
+
+        val finalOutput = "$resultText\n\n🔍 当前效果预览:\n$preview"
+        return createToolResult(true, output = finalOutput)
+    }
+
+    private suspend fun executeSqliteQuery(args: JsonObject): JsonElement {
+        val dbPath = args["db_path"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing db_path")
+        val query = args["query"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing query")
+
+        val safeQuery = query.replace("\"", "\\\"")
+
+        val command = "sqlite3 -header -column \"$dbPath\" \"$safeQuery\""
+
+        logInfo("执行 SQL: $command")
+
+        val result = ShellUtils.execCommand(command, isRoot = true)
+
+        return if (result.isSuccess) {
+            val cleanOutput = sanitizeOutput(result.successMsg, maxLines = 1000, maxChars = 32000)
+            createToolResult(true, output = cleanOutput)
+        } else {
+            createToolResult(false, error = "SQL Error:\n${result.errorMsg}\n(Exit Code: Fail)")
+        }
+    }
+
+    private fun formatXrefs(jsonStr: String, title: String): String {
+        if (jsonStr.trim().isEmpty() || jsonStr == "[]") {
+            return "ℹ️ $title: 无数据"
+        }
+
+        try {
+            val sb = StringBuilder("📊 $title:\n")
+            val items = jsonStr.trim().removePrefix("[").removeSuffix("]").split("},")
+
+            for ((index, item) in items.withIndex()) {
+                val cleanItem = item.removePrefix("{").removeSuffix("}").trim()
+                if (cleanItem.isEmpty()) continue
+
+                val fields = cleanItem.split(",").associate {
+                    val parts = it.split(":", limit = 2)
+                    if (parts.size == 2) {
+                        parts[0].trim().removeSurrounding("\"") to parts[1].trim().removeSurrounding("\"")
+                    } else {
+                        "" to ""
+                    }
+                }
+
+                val type = fields["type"] ?: "UNK"
+                val from = fields["from"]?.toLongOrNull() ?: 0
+                val to = fields["to"]?.toLongOrNull() ?: 0
+
+                val refAddr = if (title.contains("TO")) from else to
+                val hexAddr = "0x%08x".format(refAddr)
+
+                sb.append("- [$type] $hexAddr")
+
+                fields["opcode"]?.let { opcode ->
+                    sb.append(" : ${opcode.trim()}")
+                }
+                fields["fcn_name"]?.let { fcnName ->
+                    sb.append(" (in $fcnName)")
+                }
+
+                sb.append("\n")
+            }
+
+            return sb.toString()
+        } catch (e: Exception) {
+            logError("Xref JSON 解析失败", e.message)
+            return "⚠️ 解析数据失败，原始返回:\n$jsonStr"
+        }
+    }
+    private fun runR2Action(session: R2SessionManager.R2Session, cmd: String, successMsg: String): String {
+        R2Core.executeCommand(session.corePtr, cmd)
+        return "✅ $successMsg (Cmd: $cmd)"
+    }
+
+    // --- [新增] Termux 工具具体实现 ---
+    private suspend fun executeTermuxCommand(args: JsonObject): JsonElement {
+        val cmd = args["command"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "缺少命令参数")
+        val useRoot = args["use_root"]?.jsonPrimitive?.booleanOrNull ?: false
+
+        if (isDangerousCommand(cmd)) return createToolResult(false, error = "❌ 安全拦截: 检测到危险命令")
+
+        // 1. 准备环境 (PATH, LD_LIBRARY_PATH)
+        val envSetup = getTermuxEnvSetup()
+        val fullCmd = "$envSetup $cmd"
+
+        // 2. 构造最终执行命令
+        val finalCmd = if (useRoot) {
+            // Root 模式：直接执行
+            logInfo("⚡ [Root] Termux Exec: $cmd")
+            fullCmd
+        } else {
+            // 普通模式：使用 su 切换到 Termux 用户 (比 Root 安全)
+            val termuxUid = getTermuxUser()
+            logInfo("🔒 [User $termuxUid] Termux Exec: $cmd")
+            // 注意：需要转义双引号以防止 su -c 解析错误
+            "su $termuxUid -c \"${fullCmd.replace("\"", "\\\"")}\""
+        }
+
+        // 3. 执行
+        val result = ShellUtils.execCommand(finalCmd, isRoot = true)
+
+        return if (result.isSuccess) {
+            createToolResult(true, output = sanitizeOutput(result.successMsg, maxLines = 1000))
+        } else {
+            createToolResult(false, error = "Termux Error:\n${result.errorMsg}")
+        }
+    }
+
+    private suspend fun executeSaveScript(args: JsonObject): JsonElement {
+        val filename = args["filename"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "缺少文件名")
+        val content = args["content"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "缺少内容")
+
+        if (filename.contains("/") || filename.contains("\\")) {
+            return createToolResult(false, error = "❌ 文件名不能包含路径")
+        }
+        
+        val scriptPath = "$TERMUX_AI_DIR/$filename"
+        val termuxUid = getTermuxUser()
+
+        // 使用 Base64 传输内容，防止特殊字符导致 Shell 写入失败
+        val base64Content = android.util.Base64.encodeToString(
+            content.toByteArray(Charsets.UTF_8), 
+            android.util.Base64.NO_WRAP
+        )
+
+        // 原子操作：创建目录 -> 写入文件 -> 改权限 -> 改所有者
+        val cmd = "mkdir -p '$TERMUX_AI_DIR' && " +
+                  "echo '$base64Content' | base64 -d > '$scriptPath' && " +
+                  "chmod 755 '$scriptPath' && " +
+                  "chown $termuxUid:$termuxUid '$scriptPath'"
+
+        val result = ShellUtils.execCommand(cmd, isRoot = true)
+
+        return if (result.isSuccess) {
+            createToolResult(true, output = "✅ 已保存: $scriptPath\n所有者: $termuxUid")
+        } else {
+            createToolResult(false, error = "保存失败:\n${result.errorMsg}")
+        }
     }
 }
