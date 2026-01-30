@@ -538,7 +538,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "可用的 MCP 工具 (18个)",
+                        text = "可用的 MCP 工具 (20个)",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -574,7 +574,9 @@ fun MainScreen(
                         "🧪 r2_test - 测试 R2 库状态 (诊断)",
                         "🔒 r2_close_session - 关闭会话",
                         "📁 os_list_dir - 列出目录内容 (支持 Root)",
-                        "📄 os_read_file - 读取文件内容 (支持 Root)"
+                        "📄 os_read_file - 读取文件内容 (支持 Root)",
+                        "💻 termux_command - Termux 环境命令 (AI 沙盒)",
+                        "💾 termux_save_script - 保存代码 (赋权/所有者)"
                     )
                     
                     tools.forEach { tool ->

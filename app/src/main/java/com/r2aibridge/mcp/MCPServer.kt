@@ -1,6 +1,7 @@
 package com.r2aibridge.mcp
 
 import android.util.Log
+import kotlinx.coroutines.runBlocking
 import com.r2aibridge.R2Core
 import com.r2aibridge.ShellUtils
 import io.ktor.http.*
@@ -16,6 +17,53 @@ import java.text.SimpleDateFormat
 import java.util.*
 
 object MCPServer {
+        // --- [新增] Termux 常量与辅助函数 ---
+        // AI 脚本沙盒路径
+        private const val TERMUX_AI_DIR = "/data/data/com.termux/files/home/AI"
+
+        /**
+         * 获取 Termux 的用户 ID (UID)
+         * 因为 Termux 不是以 Root 运行的，我们需要知道它的 UID 才能用 su 切换过去
+         */
+        private fun getTermuxUser(): String {
+            // 通过查看 Termux 数据目录的所有者来判断 UID
+            val result = ShellUtils.execCommand("ls -ldn /data/data/com.termux", isRoot = true)
+            if (result.isSuccess) {
+                // 输出类似: drwx------ 18 10157 10157 ...
+                val parts = result.successMsg.trim().split("\\s+".toRegex())
+                if (parts.size > 2) {
+                    return parts[2] // 这就是 UID (例如 10157)
+                }
+            }
+            return "10421" // 如果检测失败，使用默认常见的 Termux UID
+        }
+
+        /**
+         * 构造 Termux 环境变量
+         * ⚠️ 关键：如果没有这个，Python/Node 等命令会因为找不到库而报错
+         */
+        private fun getTermuxEnvSetup(): String {
+            val termuxPrefix = "/data/data/com.termux/files/usr"
+            val termuxHome = "/data/data/com.termux/files/home"
+                 return "export PATH=${termuxPrefix}/bin:$" + "PATH && " +
+                     "export LD_LIBRARY_PATH=${termuxPrefix}/lib && " +
+                     "export HOME=${termuxHome} && " +
+                     "export TMPDIR=/data/local/tmp && " +
+                     "mkdir -p $TERMUX_AI_DIR && " +
+                     "cd $TERMUX_AI_DIR && "
+        }
+
+        /**
+         * 简单的安全检查，防止 AI 删库
+         */
+        private fun isDangerousCommand(command: String): Boolean {
+            val dangerousCommands = listOf(
+                "rm -rf /", "rm -rf /*", "mkfs", "dd if=", 
+                "reboot", "shutdown", ":(){ :|:& };:"
+            )
+            val lower = command.lowercase()
+            return dangerousCommands.any { lower.contains(it) }
+        }
     
     private const val TAG = "R2AI"
     
@@ -461,12 +509,6 @@ object MCPServer {
                 listOf("session_id", "address")
             ),
             createToolSchema(
-                "r2_test",
-                "🧪 [诊断工具] 测试 Radare2 库是否正常工作。",
-                mapOf(),
-                listOf()
-            ),
-            createToolSchema(
                 "r2_close_session",
                 "🔒 [会话管理] 关闭指定的 Radare2 会话。",
                 mapOf(
@@ -510,23 +552,7 @@ object MCPServer {
                 ),
                 listOf("action", "target_address", "session_id")
             ),
-            createToolSchema(
-                "os_list_dir",
-                "📁 [文件系统] 列出指定文件夹下的内容。支持 Root。",
-                mapOf(
-                    "path" to mapOf("type" to "string", "description" to "目录路径")
-                ),
-                listOf("path")
-            ),
-            createToolSchema(
-                "os_read_file",
-                "📄 [文件系统] 读取文件内容。支持 Root。",
-                mapOf(
-                    "path" to mapOf("type" to "string", "description" to "文件路径")
-                ),
-                listOf("path")
-            ),
-            createToolSchema(
+             createToolSchema(
                 "r2_config_manager",
                 "⚙️ [配置管理] 管理 Radare2 的分析与显示配置 (eval variables)。\n" +
                 "当分析结果不理想、函数截断或需要深度分析时使用。\n" +
@@ -565,6 +591,46 @@ object MCPServer {
                 listOf("action", "session_id")
             ),
             createToolSchema(
+                "os_list_dir",
+                "📁 [文件系统] 列出指定文件夹下的内容。支持 Root。",
+                mapOf(
+                    "path" to mapOf("type" to "string", "description" to "目录路径")
+                ),
+                listOf("path")
+            ),
+            createToolSchema(
+                "os_read_file",
+                "📄 [文件系统] 读取文件内容。支持 Root。",
+                mapOf(
+                    "path" to mapOf("type" to "string", "description" to "文件路径")
+                ),
+                listOf("path")
+            ),
+            createToolSchema(
+                "termux_command", 
+                "💻 [Shell] 在 Termux 环境中执行系统命令 (Python, Node, Curl, SQLCipher 等)。\n" +
+                "环境：已自动注入 PATH 和 LD_LIBRARY_PATH，可直接运行 'python script.py'。\n" +
+                "权限：\n" +
+                "- use_root=false (默认): 以 Termux 普通用户运行，更安全。\n" +
+                "- use_root=true: 仅在需要读取系统数据库时开启。",
+                mapOf(
+                    "command" to mapOf("type" to "string", "description" to "Shell 命令"),
+                    "use_root" to mapOf("type" to "boolean", "description" to "是否提权", "default" to false)
+                ), 
+                listOf("command")
+            ),
+            createToolSchema(
+                "termux_save_script", 
+                "💾 [编程] 将代码保存到 AI 专属沙盒目录 ($TERMUX_AI_DIR)。\n" +
+                "特性：自动创建目录、自动赋予执行权限 (+x)、自动修正文件所有者。\n" +
+                "用法：保存后，立即使用 termux_command('python filename.py') 运行。",
+                mapOf(
+                    "filename" to mapOf("type" to "string", "description" to "纯文件名 (例如 'scan.py')"),
+                    "content" to mapOf("type" to "string", "description" to "代码内容")
+                ), 
+                listOf("filename", "content")
+            ),
+            createToolSchema(
                 "sqlite_query",
                 "🗄️ [数据库] 使用系统内置 sqlite3 工具执行 SQL 查询。支持 Root 权限，可直接读取 /data/data 下的私有数据库。请务必使用 LIMIT 限制返回行数，防止输出过大。",
                 mapOf(
@@ -572,6 +638,12 @@ object MCPServer {
                     "query" to mapOf("type" to "string", "description" to "要执行的 SQL 语句 (如 'SELECT * FROM user LIMIT 10;')")
                 ),
                 listOf("db_path", "query")
+            ),
+             createToolSchema(
+                "r2_test",
+                "🧪 [诊断工具] 测试 Radare2 库是否正常工作。",
+                mapOf(),
+                listOf()
             )
         )
         
@@ -631,6 +703,9 @@ object MCPServer {
 
         return try {
             val result = when (toolName) {
+                // --- [新增] 分发逻辑 ---
+                "termux_command" -> runBlocking { executeTermuxCommand(arguments) }
+                "termux_save_script" -> runBlocking { executeSaveScript(arguments) }
                 "r2_open_file" -> executeOpenFile(arguments, onLogEvent)
                 "r2_analyze_file" -> executeAnalyzeFile(arguments, onLogEvent)
                 "r2_run_command" -> executeCommand(arguments)
@@ -651,7 +726,6 @@ object MCPServer {
                 "os_read_file" -> executeOsReadFile(arguments)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
-            
             fixContentFormat(result)
         } catch (e: Exception) {
             logError("工具执行异常: $toolName", e.message)
@@ -1576,9 +1650,74 @@ object MCPServer {
             return "⚠️ 解析数据失败，原始返回:\n$jsonStr"
         }
     }
-
     private fun runR2Action(session: R2SessionManager.R2Session, cmd: String, successMsg: String): String {
         R2Core.executeCommand(session.corePtr, cmd)
         return "✅ $successMsg (Cmd: $cmd)"
+    }
+
+    // --- [新增] Termux 工具具体实现 ---
+    private suspend fun executeTermuxCommand(args: JsonObject): JsonElement {
+        val cmd = args["command"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "缺少命令参数")
+        val useRoot = args["use_root"]?.jsonPrimitive?.booleanOrNull ?: false
+
+        if (isDangerousCommand(cmd)) return createToolResult(false, error = "❌ 安全拦截: 检测到危险命令")
+
+        // 1. 准备环境 (PATH, LD_LIBRARY_PATH)
+        val envSetup = getTermuxEnvSetup()
+        val fullCmd = "$envSetup $cmd"
+
+        // 2. 构造最终执行命令
+        val finalCmd = if (useRoot) {
+            // Root 模式：直接执行
+            logInfo("⚡ [Root] Termux Exec: $cmd")
+            fullCmd
+        } else {
+            // 普通模式：使用 su 切换到 Termux 用户 (比 Root 安全)
+            val termuxUid = getTermuxUser()
+            logInfo("🔒 [User $termuxUid] Termux Exec: $cmd")
+            // 注意：需要转义双引号以防止 su -c 解析错误
+            "su $termuxUid -c \"${fullCmd.replace("\"", "\\\"")}\""
+        }
+
+        // 3. 执行
+        val result = ShellUtils.execCommand(finalCmd, isRoot = true)
+
+        return if (result.isSuccess) {
+            createToolResult(true, output = sanitizeOutput(result.successMsg, maxLines = 1000))
+        } else {
+            createToolResult(false, error = "Termux Error:\n${result.errorMsg}")
+        }
+    }
+
+    private suspend fun executeSaveScript(args: JsonObject): JsonElement {
+        val filename = args["filename"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "缺少文件名")
+        val content = args["content"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "缺少内容")
+
+        if (filename.contains("/") || filename.contains("\\")) {
+            return createToolResult(false, error = "❌ 文件名不能包含路径")
+        }
+        
+        val scriptPath = "$TERMUX_AI_DIR/$filename"
+        val termuxUid = getTermuxUser()
+
+        // 使用 Base64 传输内容，防止特殊字符导致 Shell 写入失败
+        val base64Content = android.util.Base64.encodeToString(
+            content.toByteArray(Charsets.UTF_8), 
+            android.util.Base64.NO_WRAP
+        )
+
+        // 原子操作：创建目录 -> 写入文件 -> 改权限 -> 改所有者
+        val cmd = "mkdir -p '$TERMUX_AI_DIR' && " +
+                  "echo '$base64Content' | base64 -d > '$scriptPath' && " +
+                  "chmod 755 '$scriptPath' && " +
+                  "chown $termuxUid:$termuxUid '$scriptPath'"
+
+        val result = ShellUtils.execCommand(cmd, isRoot = true)
+
+        return if (result.isSuccess) {
+            createToolResult(true, output = "✅ 已保存: $scriptPath\n所有者: $termuxUid")
+        } else {
+            createToolResult(false, error = "保存失败:\n${result.errorMsg}")
+        }
     }
 }

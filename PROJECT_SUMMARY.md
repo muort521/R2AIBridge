@@ -24,7 +24,7 @@
 - ✅ `app/src/main/java/com/r2aibridge/service/R2ServiceForeground.kt` - 前台服务（Ktor 服务器）
 - ✅ `app/src/main/java/com/r2aibridge/concurrency/R2ConcurrencyManager.kt` - 并发管理（16 桶锁）
 - ✅ `app/src/main/java/com/r2aibridge/mcp/MCPModels.kt` - MCP 数据模型
-- ✅ `app/src/main/java/com/r2aibridge/mcp/MCPServer.kt` - MCP 协议处理器（18 个工具）
+- ✅ `app/src/main/java/com/r2aibridge/mcp/MCPServer.kt` - MCP 协议处理器（20 个工具）
 - ✅ `app/src/main/java/com/r2aibridge/ui/theme/Theme.kt` - Compose 主题
 
 ### Android 资源文件
@@ -93,7 +93,7 @@
 - Ktor 路由配置:
   - `POST /messages` - JSON-RPC 2.0 端点
   - `GET /health` - 健康检查
-- 实现 18 个 MCP 工具:
+- 实现 20 个 MCP 工具:
   1. `r2_analyze_file` - 分析文件
   2. `r2_execute_command` - 执行命令
   3. `r2_disassemble` - 反汇编
@@ -171,7 +171,7 @@ app/build/outputs/apk/debug/app-debug.apk
 
 - **文件总数**: 22 个
 - **代码行数**: 约 2,000+ 行
-- **支持的 MCP 工具**: 18 个
+- **支持的 MCP 工具**: 20 个
 - **链接的原生库**: 23 个
 - **支持的架构**: arm64-v8a
 - **最低 Android 版本**: 8.0 (API 26)
