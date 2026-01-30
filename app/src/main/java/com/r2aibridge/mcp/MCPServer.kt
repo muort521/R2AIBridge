@@ -744,7 +744,7 @@ object MCPServer {
                 "r2_analysis_hints" -> executeAnalysisHints(args)
                 "sqlite_query" -> executeSqliteQuery(args)
                 "os_list_dir" -> executeOsListDir(args)
-                "os_read_file" -> executeOsReadFile(largs)
+                "os_read_file" -> executeOsReadFile(args)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
             fixContentFormat(result)
