@@ -44,11 +44,6 @@ object MCPServer {
 
     /**
      * 清洗和截断 Radare2 的输出，防止 AI 崩溃
-     * @param raw 原始输出
-     * @param maxLines 最大行数
-     * @param maxChars 最大字符数
-     * @param filterGarbage 是否过滤垃圾段 (如 .eh_frame)
-     * @return 清洗后的输出
      */
     private fun sanitizeOutput(
         raw: String, 
@@ -106,12 +101,9 @@ object MCPServer {
     }
 
     /**
-     * Root 复制逻辑：尝试打开文件 -> 失败 -> 强行 Root 复制到缓存 777 -> 打开副本
-     * @param originalPath 原始文件路径
-     * @return 成功返回副本路径，失败返回 null
+     * Root 复制逻辑
      */
     private fun tryRootCopy(originalPath: String): String? {
-        // 先检查是否有 Root 权限
         if (!hasRootPermission()) {
             logError("设备未获得 Root 权限，无法执行 Root 复制", "文件: $originalPath")
             return null
@@ -124,24 +116,20 @@ object MCPServer {
                 return null
             }
 
-            // 创建缓存目录
             val cacheDir = File(System.getProperty("java.io.tmpdir"), "r2_root_cache")
             if (!cacheDir.exists()) {
                 cacheDir.mkdirs()
             }
 
-            // 生成副本路径
             val fileName = originalFile.name
             val copyPath = File(cacheDir, "${System.currentTimeMillis()}_${fileName}").absolutePath
 
             logInfo("尝试 Root 复制文件: $originalPath -> $copyPath")
 
-            // 执行 Root 复制命令
             val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "cp '$originalPath' '$copyPath' && chmod 777 '$copyPath'"))
             val exitCode = process.waitFor()
 
             if (exitCode == 0) {
-                // 验证副本是否存在且可读
                 val copyFile = File(copyPath)
                 if (copyFile.exists() && copyFile.canRead()) {
                     logInfo("Root 复制成功: $copyPath")
@@ -160,9 +148,6 @@ object MCPServer {
         return null
     }
 
-    /**
-     * 清理所有 Root 复制的副本文件
-     */
     fun cleanupRootCopies() {
         try {
             val cacheDir = File(System.getProperty("java.io.tmpdir"), "r2_root_cache")
@@ -188,7 +173,6 @@ object MCPServer {
             json(json)
         }
 
-        // CORS 支持
         app.intercept(ApplicationCallPipeline.Plugins) {
             call.response.header("Access-Control-Allow-Origin", "*")
             call.response.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -201,7 +185,6 @@ object MCPServer {
         }
 
         app.routing {
-            // MCP 根端点 - 服务信息
             get("/") {
                 val info = buildJsonObject {
                     put("name", "Radare2 MCP Server")
@@ -260,7 +243,6 @@ object MCPServer {
                     logInfo("[App -> R2] ${request.method} (ID: $idStr)")
                     onLogEvent(logMsg)
 
-                    // 处理通知（不需要响应）
                     if (method == "notifications/initialized") {
                         logInfo("客户端已初始化")
                         call.respond(HttpStatusCode.NoContent)
@@ -298,21 +280,18 @@ object MCPServer {
                         }
                     }
 
-                    // 🔥 手动构建响应 JSON，强制包含 jsonrpc: "2.0"
                     val responseJson = buildJsonObject {
                         put("jsonrpc", "2.0")
                         put("id", request.id ?: JsonNull)
                         put("result", result)
                     }.toString()
 
-                    // 记录响应
                     if (responseJson.length < 500) {
                         logInfo("[R2 -> App] ${responseJson.take(200)}")
                     } else {
                         logInfo("[R2 -> App] ${responseJson.length} bytes")
                     }
 
-                    // 设置响应头
                     call.response.header(HttpHeaders.CacheControl, "no-cache")
 
                     call.respondText(
@@ -342,7 +321,6 @@ object MCPServer {
                 }
             }
 
-            // 处理 OPTIONS 请求（CORS 预检）
             options("/*") {
                 call.response.header(HttpHeaders.AccessControlAllowOrigin, "*")
                 call.response.header(HttpHeaders.AccessControlAllowMethods, "GET, POST, OPTIONS")
@@ -365,9 +343,6 @@ object MCPServer {
         logInfo("🚀 MCP 服务器已启动")
     }
 
-    /**
-     * 处理 ping 方法 - 连接测试
-     */
     private fun handlePing(): JsonElement {
         logInfo("收到 ping 请求")
         return buildJsonObject {
@@ -376,31 +351,19 @@ object MCPServer {
         }
     }
 
-    /**
-     * 处理 initialize 方法 - 协议版本协商
-     */
     private fun handleInitialize(params: JsonObject?): JsonElement {
-        // 1. 获取客户端发来的协议版本
         val clientProtocolVersion = params?.get("protocolVersion")?.jsonPrimitive?.content
-        
-        // 2. 协商逻辑：如果客户端提供了版本，就原样返回（表示支持）；否则使用默认值
         val negotiatedVersion = clientProtocolVersion ?: "2024-11-05"
         
         logInfo("协议协商: 客户端=$clientProtocolVersion -> 最终使用=$negotiatedVersion")
         
         return buildJsonObject {
-            // 必须回传协商后的版本号
             put("protocolVersion", negotiatedVersion)
-            
-            // 必须声明 capabilities (能力)，否则客户端不会请求工具列表
             put("capabilities", buildJsonObject {
                 put("tools", buildJsonObject {
-                    put("listChanged", false) // 设为 true 可以在工具列表变更时通知客户端
+                    put("listChanged", false)
                 })
-                // 如果将来支持 logging 或 resources，也在这里添加
             })
-            
-            // 服务器信息
             put("serverInfo", buildJsonObject {
                 put("name", "Radare2 MCP Server")
                 put("version", "1.0")
@@ -422,18 +385,19 @@ object MCPServer {
             ),
             createToolSchema(
                 "r2_analyze_file",
-                "⚡ [深度分析] 一次性执行深度分析 (aaa) 并自动释放资源。注意：aaa 会耗时较长，仅用于需要完整分析的场景。对于大文件，建议使用 r2_open_file(auto_analyze=false) + r2_run_command 手动分析。",
+                "⚡ [深度分析] 一次性执行深度分析 (aaa) 并自动释放资源。支持复用现有 session_id 或根据文件路径查找会话。",
                 mapOf(
-                    "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径")
+                    "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径"),
+                    "session_id" to mapOf("type" to "string", "description" to "可选：现有会话 ID")
                 ),
                 listOf("file_path")
             ),
             createToolSchema(
                 "r2_run_command",
-                "⚙️ [通用命令] 在指定会话中执行任意 Radare2 命令。支持所有 r2 命令，如：pdf（反汇编函数）、afl（列出函数）、iz（列出字符串）、px（十六进制查看）等。",
+                "⚙️ [通用命令] 在指定会话中执行任意 Radare2 命令。支持所有 r2 命令。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
-                    "command" to mapOf("type" to "string", "description" to "Radare2 命令，例如：'pdf @ main', 'afl', 'iz', 'px 100 @ 0x401000'")
+                    "command" to mapOf("type" to "string", "description" to "Radare2 命令")
                 ),
                 listOf("session_id", "command")
             ),
@@ -449,21 +413,21 @@ object MCPServer {
             ),
             createToolSchema(
                 "r2_list_strings",
-                "📝 [逆向第一步] 列出二进制文件中的字符串。用于快速定位关键逻辑。默认使用 'iz'（数据段）并自动过滤 .eh_frame/.text 等垃圾段。",
+                "📝 [逆向第一步] 列出二进制文件中的字符串。通过配置 bin.str.min 进行底层过滤，提高大文件分析性能。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
-                    "mode" to mapOf("type" to "string", "description" to "搜索模式: 'data'（默认，iz，仅数据段）或 'all'（izz，全盘搜索）", "default" to "data"),
-                    "min_length" to mapOf("type" to "integer", "description" to "最小字符串长度（默认 5，过滤短字符串）", "default" to 5)
+                    "mode" to mapOf("type" to "string", "description" to "搜索模式: 'data' (iz) 或 'all' (izz)", "default" to "data"),
+                    "min_length" to mapOf("type" to "integer", "description" to "最小字符串长度（默认 5，在 R2 核心层过滤）", "default" to 5)
                 ),
                 listOf("session_id")
             ),
             createToolSchema(
                 "r2_get_xrefs",
-                "🔗 [逻辑追踪必备] 获取指定地址/函数的交叉引用。查找 \"谁调用了它\"（axt）或 \"它调用了谁\"（axf）。默认限制返回 50 个引用，防止通用函数（如 malloc）的引用风暴。",
+                "🔗 [逻辑追踪必备] 获取指定地址/函数的交叉引用。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
-                    "address" to mapOf("type" to "string", "description" to "目标地址或函数名（如: 0x401000 或 main）"),
-                    "direction" to mapOf("type" to "string", "description" to "引用方向: 'to'（默认，axt，谁调用了它）或 'from'（axf，它调用了谁）", "default" to "to"),
+                    "address" to mapOf("type" to "string", "description" to "目标地址或函数名"),
+                    "direction" to mapOf("type" to "string", "description" to "方向: 'to' (默认) 或 'from'", "default" to "to"),
                     "limit" to mapOf("type" to "integer", "description" to "最大返回数量（默认 50）", "default" to 50)
                 ),
                 listOf("session_id", "address")
@@ -473,7 +437,7 @@ object MCPServer {
                 "ℹ️ [环境感知] 获取二进制文件的详细信息。包括架构（32/64位）、平台（ARM/x86）、文件类型（ELF/DEX）等。帮助 AI 决定分析策略。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
-                    "detailed" to mapOf("type" to "boolean", "description" to "是否显示详细信息（iI），默认 false（i）", "default" to false)
+                    "detailed" to mapOf("type" to "boolean", "description" to "详细模式", "default" to false)
                 ),
                 listOf("session_id")
             ),
@@ -496,15 +460,17 @@ object MCPServer {
                 ),
                 listOf("session_id", "address")
             ),
-            createToolSchema(                "r2_test",
-                "🧪 [诊断工具] 测试 Radare2 库是否正常工作。返回版本信息和基本功能测试结果。",
+            createToolSchema(
+                "r2_test",
+                "🧪 [诊断工具] 测试 Radare2 库是否正常工作。",
                 mapOf(),
                 listOf()
             ),
-            createToolSchema(                "r2_close_session",
-                "🔒 [会话管理] 关闭指定的 Radare2 会话，释放资源。",
+            createToolSchema(
+                "r2_close_session",
+                "🔒 [会话管理] 关闭指定的 Radare2 会话。",
                 mapOf(
-                    "session_id" to mapOf("type" to "string", "description" to "要关闭的会话 ID")
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
                 ),
                 listOf("session_id")
             ),
@@ -520,9 +486,10 @@ object MCPServer {
                 "- 'full' (aaa): 全量深度分析（耗时极长，仅在小文件或必要时使用）。",
                 mapOf(
                     "strategy" to mapOf("type" to "string", "enum" to listOf("basic", "blocks", "calls", "refs", "pointers", "full"), "description" to "分析策略模式"),
-                    "address" to mapOf("type" to "string", "description" to "可选：指定分析的起始地址或符号（例如 '0x00401000' 或 'sym.main'）。如果不填，默认分析全局或当前位置。")
+                    "address" to mapOf("type" to "string", "description" to "可选：指定分析的起始地址或符号（例如 '0x00401000' 或 'sym.main'）。如果不填，默认分析全局或当前位置。"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
                 ),
-                listOf("strategy")
+                listOf("strategy", "session_id")
             ),
             createToolSchema(
                 "r2_manage_xrefs",
@@ -538,23 +505,24 @@ object MCPServer {
                 mapOf(
                     "action" to mapOf("type" to "string", "enum" to listOf("list_to", "list_from", "add_code", "add_call", "add_data", "add_string", "remove_all"), "description" to "要执行的操作类型"),
                     "target_address" to mapOf("type" to "string", "description" to "目标地址或符号（例如 '0x00401000', 'sym.main', 'entry0'）。对于添加操作，这是引用指向的目标。"),
-                    "source_address" to mapOf("type" to "string", "description" to "源地址（可选）。对于添加操作(add_*)，这是发出引用的位置。如果不填，默认为当前光标位置。")
+                    "source_address" to mapOf("type" to "string", "description" to "源地址（可选）。对于添加操作(add_*)，这是发出引用的位置。如果不填，默认为当前光标位置。"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
                 ),
-                listOf("action", "target_address")
+                listOf("action", "target_address", "session_id")
             ),
             createToolSchema(
                 "os_list_dir",
-                "📁 [文件系统] 列出指定文件夹下的内容。如果遇到权限拒绝（如 /data/data），会自动尝试使用 Root 权限列出。输出包含文件类型（DIR/FILE）和大小。",
+                "📁 [文件系统] 列出指定文件夹下的内容。支持 Root。",
                 mapOf(
-                    "path" to mapOf("type" to "string", "description" to "目标文件夹的绝对路径，例如 /sdcard/ 或 /data/local/tmp/")
+                    "path" to mapOf("type" to "string", "description" to "目录路径")
                 ),
                 listOf("path")
             ),
             createToolSchema(
                 "os_read_file",
-                "📄 [文件系统] 读取指定文件的文本内容。支持系统文件和受保护文件的 Root 读取。包含大文件自动截断保护。",
+                "📄 [文件系统] 读取文件内容。支持 Root。",
                 mapOf(
-                    "path" to mapOf("type" to "string", "description" to "目标文件的绝对路径")
+                    "path" to mapOf("type" to "string", "description" to "文件路径")
                 ),
                 listOf("path")
             ),
@@ -571,9 +539,10 @@ object MCPServer {
                 mapOf(
                     "action" to mapOf("type" to "string", "enum" to listOf("get", "set", "list"), "description" to "操作类型：get(读取当前值), set(修改值), list(搜索配置项)"),
                     "key" to mapOf("type" to "string", "description" to "配置键名，例如 'anal.strings' 或 'anal.in'"),
-                    "value" to mapOf("type" to "string", "description" to "要设置的新值 (仅 set 模式需要)。例如 'true', 'false', 'io.maps'")
+                    "value" to mapOf("type" to "string", "description" to "要设置的新值 (仅 set 模式需要)。例如 'true', 'false', 'io.maps'"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
                 ),
-                listOf("action", "key")
+                listOf("action", "key", "session_id")
             ),
             createToolSchema(
                 "r2_analysis_hints",
@@ -590,9 +559,10 @@ object MCPServer {
                 mapOf(
                     "action" to mapOf("type" to "string", "enum" to listOf("list", "set_base", "set_arch", "set_bits", "override_jump", "override_opcode", "remove"), "description" to "提示操作类型"),
                     "address" to mapOf("type" to "string", "description" to "可选：目标地址（默认为当前光标位置）。"),
-                    "value" to mapOf("type" to "string", "description" to "参数值。例如进制类型('10', 's')、架构名、跳转目标地址或替换的指令字符串。")
+                    "value" to mapOf("type" to "string", "description" to "参数值。例如进制类型('10', 's')、架构名、跳转目标地址或替换的指令字符串。"),
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
                 ),
-                listOf("action")
+                listOf("action", "session_id")
             ),
             createToolSchema(
                 "sqlite_query",
@@ -631,6 +601,8 @@ object MCPServer {
                             when (v) {
                                 is String -> put(k, v)
                                 is Int -> put(k, v)
+                                is Boolean -> put(k, v)
+                                is List<*> -> put(k, JsonArray(v.map { JsonPrimitive(it.toString()) }))
                                 else -> put(k, v.toString())
                             }
                         }
@@ -680,7 +652,6 @@ object MCPServer {
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
             
-            // 自动修复内容格式（类似 r2.js 的 Hotfix）
             fixContentFormat(result)
         } catch (e: Exception) {
             logError("工具执行异常: $toolName", e.message)
@@ -688,9 +659,6 @@ object MCPServer {
         }
     }
 
-    /**
-     * 创建工具调用结果（符合 MCP 协议规范）
-     */
     private fun createToolResult(
         success: Boolean,
         output: String? = null,
@@ -707,10 +675,6 @@ object MCPServer {
         }
     }
 
-    /**
-     * 自动修复格式 Bug（参考 r2.js 的 Hotfix）
-     * 确保 content 数组中的每个元素都是正确的对象格式
-     */
     private fun fixContentFormat(result: JsonElement): JsonElement {
         if (result !is JsonObject) return result
         
@@ -719,7 +683,6 @@ object MCPServer {
         val fixedContent = content.map { item ->
             when {
                 item is JsonPrimitive && item.isString -> {
-                    // 自动修复：纯字符串转为 {type: "text", text: "..."}
                     val text = item.content
                     if (text.length > 30) {
                         logInfo("[自动修复格式] ${text.take(30)}...")
@@ -748,36 +711,26 @@ object MCPServer {
         val filePath = args["file_path"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing file_path")
         
-        // 读取 auto_analyze 参数，默认 true
         val autoAnalyze = args["auto_analyze"]?.jsonPrimitive?.booleanOrNull ?: true
         
-        // 验证文件是否存在
         val file = java.io.File(filePath)
         if (!file.exists()) {
             logInfo("文件不存在或无权限访问，尝试 Root 复制: $filePath")
-            // 即使文件不存在，也尝试 Root 复制（可能是权限问题）
             val copyPath = tryRootCopy(filePath)
             if (copyPath != null) {
                 logInfo("Root 复制成功，使用副本继续: $copyPath")
-                // 使用副本文件
                 val copyFile = java.io.File(copyPath)
                 if (!copyFile.exists()) {
                     logError("Root 复制后副本文件不存在", copyPath)
                     return createToolResult(false, error = "Failed to create accessible copy of file: $filePath")
                 }
-                // 继续使用副本文件进行后续操作
                 return executeOpenFileWithFile(copyFile, copyPath, autoAnalyze, onLogEvent)
             } else {
                 logError("文件不存在且 Root 复制失败", filePath)
-                return createToolResult(false, error = "File does not exist or no permission to access: $filePath\n\nPossible solutions:\n• Check if the file path is correct\n• For Android APK analysis, try: classes.dex, classes2.dex, classes3.dex, etc.\n• For native libraries, common extensions: .so, .dll, .dylib\n• For executables: .elf, .exe, .bin\n• Ensure device is rooted for accessing system files\n• Check app permissions for the file location")
+                return createToolResult(false, error = "File does not exist or no permission to access: $filePath")
             }
         }
         
-        // 注意：即使 file.canRead() 返回 false，我们也继续尝试 R2Core.openFile
-        // 因为在 Android 中，很多系统文件普通应用无法读取，但 R2 可能可以通过其他方式访问
-        // 或者我们可以通过 Root 复制来解决权限问题
-        
-        // session_id 可选，如果没有则自动创建
         var sessionId = args["session_id"]?.jsonPrimitive?.content
         var session = if (sessionId != null) R2SessionManager.getSession(sessionId) else null
         
@@ -792,41 +745,54 @@ object MCPServer {
             val opened = R2Core.openFile(corePtr, filePath)
             if (!opened) {
                 logInfo("文件打开失败，尝试 Root 复制: $filePath")
-                // 尝试 Root 复制
                 val copyPath = tryRootCopy(filePath)
                 if (copyPath != null) {
                     logInfo("使用 Root 复制的副本重试: $copyPath")
                     val copyOpened = R2Core.openFile(corePtr, copyPath)
                     if (copyOpened) {
                         logInfo("Root 复制副本打开成功")
-                        // 更新会话路径为副本路径
                         sessionId = R2SessionManager.createSession(copyPath, corePtr)
                         session = R2SessionManager.getSession(sessionId)!!
-                        logInfo("创建新会话 (使用副本): $sessionId (原始文件: ${file.absolutePath}, 副本: $copyPath)")
+                        logInfo("创建新会话 (使用副本): $sessionId")
                     } else {
                         R2Core.closeR2Core(corePtr)
                         logError("Root 复制副本也无法打开", copyPath)
-                        return createToolResult(false, error = "Failed to open file: $filePath (even after root copy to $copyPath)")
+                        return createToolResult(false, error = "Failed to open file (root copy failed): $copyPath")
                     }
                 } else {
                     R2Core.closeR2Core(corePtr)
                     logError("打开文件失败且 Root 复制失败", filePath)
-                    return createToolResult(false, error = "Failed to open file: $filePath\n\nPossible solutions:\n1. Check if file exists and is readable\n2. Ensure device is rooted and has root permission\n3. Try using a different file path\n4. Check if file is a valid binary format (ELF, PE, Mach-O, etc.)")
+                    return createToolResult(false, error = "Failed to open file: $filePath")
                 }
             } else {
                 sessionId = R2SessionManager.createSession(filePath, corePtr)
                 session = R2SessionManager.getSession(sessionId)!!
-                logInfo("创建新会话: $sessionId (文件: ${file.absolutePath})")
+                logInfo("创建新会话: $sessionId")
             }
         } else {
-            logInfo("使用现有会话: $sessionId (文件: $filePath)")
+            // [补全功能 1]：如果传入了有效的 session_id，则在现有会话中打开文件
+            logInfo("复用现有会话: $sessionId，尝试打开文件: $filePath")
+            val opened = R2Core.openFile(session.corePtr, filePath)
+            if (!opened) {
+                logInfo("文件打开失败，尝试 Root 复制并复用会话...")
+                val copyPath = tryRootCopy(filePath)
+                if (copyPath != null) {
+                    val copyOpened = R2Core.openFile(session.corePtr, copyPath)
+                    if (copyOpened) {
+                        logInfo("复用会话打开 Root 副本成功: $copyPath")
+                    } else {
+                         return createToolResult(false, error = "Failed to open file in existing session: $filePath")
+                    }
+                } else {
+                     return createToolResult(false, error = "Failed to open file in existing session: $filePath")
+                }
+            }
         }
 
-        // 执行分析（如果启用）
         val analysisResult = if (autoAnalyze) {
             logInfo("执行基础分析 (aa)...")
             val startTime = System.currentTimeMillis()
-            val output = R2Core.executeCommand(session.corePtr, "aa")
+            val output = R2Core.executeCommand(session!!.corePtr, "aa")
             val duration = System.currentTimeMillis() - startTime
             logInfo("分析完成，耗时 ${duration}ms")
             "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
@@ -834,25 +800,16 @@ object MCPServer {
             "\n[跳过自动分析]"
         }
 
-        val info = R2Core.executeCommand(session.corePtr, "i")
+        val info = R2Core.executeCommand(session!!.corePtr, "i")
         
         return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
     }
 
-    /**
-     * 辅助函数：使用指定的文件对象执行打开操作
-     */
     private suspend fun executeOpenFileWithFile(file: java.io.File, filePath: String, autoAnalyze: Boolean, onLogEvent: (String) -> Unit): JsonElement {
-        // 注意：即使 file.canRead() 返回 false，我们也继续尝试 R2Core.openFile
-        // 因为在 Android 中，很多系统文件普通应用无法读取，但 R2 可能可以通过其他方式访问
-        // 或者我们可以通过 Root 复制来解决权限问题
-        
-        // session_id 可选，如果没有则自动创建
         var sessionId: String
         var session = R2SessionManager.getSessionByFilePath(filePath)
         
         if (session == null) {
-            // 创建新会话
             val corePtr = R2Core.initR2Core()
             if (corePtr == 0L) {
                 logError("R2 Core 初始化失败")
@@ -868,17 +825,16 @@ object MCPServer {
             
             sessionId = R2SessionManager.createSession(filePath, corePtr)
             session = R2SessionManager.getSession(sessionId)!!
-            logInfo("创建新会话: $sessionId (文件: ${file.absolutePath})")
+            logInfo("创建新会话: $sessionId")
         } else {
             sessionId = session.sessionId
-            logInfo("使用现有会话: $sessionId (文件: $filePath)")
+            logInfo("使用现有会话: $sessionId")
         }
 
-        // 执行分析（如果启用）
         val analysisResult = if (autoAnalyze) {
             logInfo("执行基础分析 (aa)...")
             val startTime = System.currentTimeMillis()
-            val output = R2Core.executeCommand(session.corePtr, "aa")
+            val output = R2Core.executeCommand(session!!.corePtr, "aa")
             val duration = System.currentTimeMillis() - startTime
             logInfo("分析完成，耗时 ${duration}ms")
             "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
@@ -886,7 +842,7 @@ object MCPServer {
             "\n[跳过自动分析]"
         }
 
-        val info = R2Core.executeCommand(session.corePtr, "i")
+        val info = R2Core.executeCommand(session!!.corePtr, "i")
         
         return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
     }
@@ -894,40 +850,50 @@ object MCPServer {
     private suspend fun executeAnalyzeFile(args: JsonObject, onLogEvent: (String) -> Unit): JsonElement {
         val filePath = args["file_path"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing file_path")
+            
+        // [补全功能 2]: 优先检查是否传入了 session_id
+        val explicitSessionId = args["session_id"]?.jsonPrimitive?.content
+        if (explicitSessionId != null) {
+            val existingSession = R2SessionManager.getSession(explicitSessionId)
+            if (existingSession != null) {
+                logInfo("使用指定会话进行分析: $explicitSessionId")
+                
+                logInfo("执行深度分析 (aaa)...")
+                val startTime = System.currentTimeMillis()
+                R2Core.executeCommand(existingSession.corePtr, "aaa")
+                val duration = System.currentTimeMillis() - startTime
+                
+                val info = R2Core.executeCommand(existingSession.corePtr, "i")
+                val funcs = R2Core.executeCommand(existingSession.corePtr, "afl~?")
+                
+                return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[指定会话深度分析]\nFile: $filePath\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
+            }
+        }
         
-        // 验证文件是否存在
         val file = java.io.File(filePath)
         if (!file.exists()) {
             logInfo("文件不存在或无权限访问，尝试 Root 复制: $filePath")
-            // 即使文件不存在，也尝试 Root 复制（可能是权限问题）
             val copyPath = tryRootCopy(filePath)
             if (copyPath != null) {
                 logInfo("Root 复制成功，使用副本继续: $copyPath")
-                // 使用副本文件
                 val copyFile = java.io.File(copyPath)
                 if (!copyFile.exists()) {
                     logError("Root 复制后副本文件不存在", copyPath)
                     return createToolResult(false, error = "Failed to create accessible copy of file: $filePath")
                 }
-                // 继续使用副本文件进行后续操作
                 return executeAnalyzeFileWithFile(copyFile, copyPath, onLogEvent)
             } else {
                 logError("文件不存在且 Root 复制失败", filePath)
-                return createToolResult(false, error = "File does not exist or no permission to access: $filePath\n\nPossible solutions:\n• Check if the file path is correct\n• For Android APK analysis, try: classes.dex, classes2.dex, classes3.dex, etc.\n• For native libraries, common extensions: .so, .dll, .dylib\n• For executables: .elf, .exe, .bin\n• Ensure device is rooted for accessing system files\n• Check app permissions for the file location")
+                return createToolResult(false, error = "File does not exist or no permission to access: $filePath")
             }
         }
         
-        // 注意：即使 file.canRead() 返回 false，我们也继续尝试分析
-        // 因为在 Android 中，很多系统文件普通应用无法读取，但可以通过 Root 复制解决
-
         logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
 
-        // 检查是否已有会话打开该文件
         val existingSession = R2SessionManager.getSessionByFilePath(file.absolutePath)
         if (existingSession != null) {
             logInfo("文件已被会话 ${existingSession.sessionId} 打开，执行深度分析")
             
-            // 在现有会话中执行深度分析
             val startTime = System.currentTimeMillis()
             R2Core.executeCommand(existingSession.corePtr, "aaa")
             val duration = System.currentTimeMillis() - startTime
@@ -938,36 +904,30 @@ object MCPServer {
             return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[复用现有会话]\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
         }
 
-        // 创建 R2 Core 实例
         val corePtr = R2Core.initR2Core()
         if (corePtr == 0L) {
             logError("R2 Core 初始化失败")
-            return createToolResult(false, error = "Failed to initialize R2 core (r_core_new returned null)")
+            return createToolResult(false, error = "Failed to initialize R2 core")
         }
 
         try {
-            // 打开文件
             val opened = R2Core.openFile(corePtr, file.absolutePath)
             if (!opened) {
-                // 尝试 Root 复制
                 val copyPath = tryRootCopy(file.absolutePath)
                 if (copyPath != null) {
                     logInfo("使用 Root 复制的副本重试分析: $copyPath")
                     val copyOpened = R2Core.openFile(corePtr, copyPath)
                     if (copyOpened) {
                         logInfo("Root 复制副本打开成功，开始深度分析")
-                        // 更新文件路径为副本路径
                         val copyFile = File(copyPath)
                         val sessionId = R2SessionManager.createSession(copyPath, corePtr)
 
-                        // 执行深度分析
                         logInfo("执行深度分析 (aaa)...")
                         val startTime = System.currentTimeMillis()
                         R2Core.executeCommand(corePtr, "aaa")
                         val duration = System.currentTimeMillis() - startTime
                         logInfo("深度分析完成，耗时 ${duration}ms")
 
-                        // 获取文件信息
                         val info = R2Core.executeCommand(corePtr, "i")
                         val funcs = R2Core.executeCommand(corePtr, "afl~?")
 
@@ -979,40 +939,18 @@ object MCPServer {
                 }
 
                 logError("打开文件失败且 Root 复制失败", file.absolutePath)
-                // 尝试获取错误详情
-                val fileList = try {
-                    R2Core.executeCommand(corePtr, "o")
-                } catch (e: Exception) {
-                    "Cannot get file list: ${e.message}"
-                }
-                val coreInfo = try {
-                    R2Core.executeCommand(corePtr, "i")
-                } catch (e: Exception) {
-                    "Cannot get info: ${e.message}"
-                }
                 R2Core.closeR2Core(corePtr)
-                return createToolResult(false, 
-                    error = "Failed to open file: ${file.absolutePath}\n\n" +
-                           "File info:\n" +
-                           "  - Exists: ${file.exists()}\n" +
-                           "  - Readable: ${file.canRead()}\n" +
-                           "  - Size: ${file.length()} bytes\n\n" +
-                           "R2 opened files: $fileList\n\n" +
-                           "R2 info: $coreInfo\n\n" +
-                           "Root copy attempted but failed. Check if device is rooted and su command is available.")
+                return createToolResult(false, error = "Failed to open file: ${file.absolutePath}")
             }
 
-            // 创建会话
             val sessionId = R2SessionManager.createSession(file.absolutePath, corePtr)
 
-            // 执行深度分析
             logInfo("执行深度分析 (aaa)...")
             val startTime = System.currentTimeMillis()
             R2Core.executeCommand(corePtr, "aaa")
             val duration = System.currentTimeMillis() - startTime
             logInfo("深度分析完成，耗时 ${duration}ms")
 
-            // 获取文件信息
             val info = R2Core.executeCommand(corePtr, "i")
             val funcs = R2Core.executeCommand(corePtr, "afl~?")
 
@@ -1025,21 +963,13 @@ object MCPServer {
         }
     }
 
-    /**
-     * 辅助函数：使用指定的文件对象执行分析操作
-     */
     private suspend fun executeAnalyzeFileWithFile(file: java.io.File, filePath: String, onLogEvent: (String) -> Unit): JsonElement {
-        // 注意：即使 file.canRead() 返回 false，我们也继续尝试分析
-        // 因为在 Android 中，很多系统文件普通应用无法读取，但可以通过 Root 复制解决
-
         logInfo("分析文件: ${file.absolutePath} (${file.length()} bytes)")
 
-        // 检查是否已有会话打开该文件
         val existingSession = R2SessionManager.getSessionByFilePath(file.absolutePath)
         if (existingSession != null) {
             logInfo("文件已被会话 ${existingSession.sessionId} 打开，执行深度分析")
             
-            // 在现有会话中执行深度分析
             val startTime = System.currentTimeMillis()
             R2Core.executeCommand(existingSession.corePtr, "aaa")
             val duration = System.currentTimeMillis() - startTime
@@ -1050,15 +980,13 @@ object MCPServer {
             return createToolResult(true, output = "Session: ${existingSession.sessionId}\n\n[复用现有会话]\nFile: ${file.absolutePath}\nSize: ${file.length()} bytes\nFunctions: $funcs\n深度分析耗时: ${duration}ms\n\n$info")
         }
 
-        // 创建 R2 Core 实例
         val corePtr = R2Core.initR2Core()
         if (corePtr == 0L) {
             logError("R2 Core 初始化失败")
-            return createToolResult(false, error = "Failed to initialize R2 core (r_core_new returned null)")
+            return createToolResult(false, error = "Failed to initialize R2 core")
         }
 
         try {
-            // 打开文件
             val opened = R2Core.openFile(corePtr, filePath)
             if (!opened) {
                 R2Core.closeR2Core(corePtr)
@@ -1066,17 +994,14 @@ object MCPServer {
                 return createToolResult(false, error = "Failed to open file: $filePath")
             }
 
-            // 创建会话
             val sessionId = R2SessionManager.createSession(filePath, corePtr)
 
-            // 执行深度分析
             logInfo("执行深度分析 (aaa)...")
             val startTime = System.currentTimeMillis()
             R2Core.executeCommand(corePtr, "aaa")
             val duration = System.currentTimeMillis() - startTime
             logInfo("深度分析完成，耗时 ${duration}ms")
 
-            // 获取文件信息
             val info = R2Core.executeCommand(corePtr, "i")
             val funcs = R2Core.executeCommand(corePtr, "afl~?")
 
@@ -1100,10 +1025,8 @@ object MCPServer {
 
         logInfo("执行命令: $command (Session: ${sessionId.take(16)})")
         
-        // 直接使用会话的 core 指针执行命令
         val rawResult = R2Core.executeCommand(session.corePtr, command)
         
-        // 使用全局清洗函数防止输出爆炸
         val result = sanitizeOutput(rawResult, maxLines = 1000, maxChars = 20000)
         
         if (result.length > 200) {
@@ -1117,23 +1040,65 @@ object MCPServer {
         val sessionId = args["session_id"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing session_id")
         
-        val filter = args["filter"]?.jsonPrimitive?.content ?: ""  // 新增过滤参数
-        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 500   // 默认限制500个
+        val filter = args["filter"]?.jsonPrimitive?.content ?: ""
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 500
 
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
-        // 使用 afl~keyword 语法进行过滤
         val command = if (filter.isBlank()) "afl" else "afl~$filter"
         
         logInfo("列出函数 (过滤: '$filter', 限制: $limit, Session: ${sessionId.take(16)})")
         
         val rawResult = R2Core.executeCommand(session.corePtr, command)
         
-        // 使用全局清洗函数限制输出大小
         val result = sanitizeOutput(rawResult, maxLines = limit, maxChars = 16000)
         
         return createToolResult(true, output = result)
+    }
+    
+    private suspend fun executeListStrings(args: JsonObject): JsonElement {
+        val sessionId = args["session_id"]?.jsonPrimitive?.content
+            ?: return createToolResult(false, error = "Missing session_id")
+
+        val mode = args["mode"]?.jsonPrimitive?.content ?: "data"
+        val minLength = args["min_length"]?.jsonPrimitive?.intOrNull ?: 5
+        
+        val session = R2SessionManager.getSession(sessionId)
+            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
+
+        val command = when (mode) {
+            "all" -> "izz"
+            else -> "iz"
+        }
+        
+        logInfo("列出字符串 (模式: $mode, 最小长度: $minLength, Session: ${sessionId.take(16)})")
+        
+        // [补全功能 3]：使用 R2 原生配置进行过滤，防止内存爆炸
+        R2Core.executeCommand(session.corePtr, "e bin.str.min=$minLength")
+        
+        val rawOutput = R2Core.executeCommand(session.corePtr, command)
+        
+        val cleanOutput = rawOutput.lineSequence()
+            .filter { line ->
+                !line.contains(".eh_frame") && 
+                !line.contains(".gcc_except_table") &&
+                !line.contains(".text") &&
+                !line.contains("libunwind")
+            }
+            .filter { line ->
+                line.trim().length > 20 || 
+                line.split("ascii", "utf8", "utf16", "utf32").lastOrNull()?.trim()?.length ?: 0 >= minLength
+            }
+            .joinToString("\n")
+
+        val finalOutput = if (cleanOutput.isBlank()) {
+            "No meaningful strings found (filters active: min_len=$minLength, exclude=.text/.eh_frame)"
+        } else {
+            sanitizeOutput(cleanOutput, maxLines = 500, maxChars = 16000)
+        }
+        
+        return createToolResult(true, output = finalOutput)
     }
 
     private suspend fun executeDecompileFunction(args: JsonObject): JsonElement {
@@ -1145,25 +1110,22 @@ object MCPServer {
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
-        // 1. 先检查函数大小 (afi 命令获取函数信息)
         val info = R2Core.executeCommand(session.corePtr, "afi @ $address")
         val size = info.lines()
             .find { it.trim().startsWith("size:") }
             ?.substringAfter(":")
             ?.trim()
             ?.toLongOrNull() ?: 0
-                   
-        if (size > 10000) { // 如果二进制大小超过 10KB，反编译代码会巨大
+                    
+        if (size > 10000) {
             logInfo("函数过大 ($address, size: $size bytes)，跳过反编译")
             return createToolResult(true, output = "⚠️ 函数过大 (Size: $size bytes)，反编译可能导致超时或不准确。\n\n建议先使用 r2_disassemble 查看局部汇编，或使用 r2_run_command 执行 'pdf @ $address' 查看函数结构。")
         }
 
         logInfo("反编译函数: $address (size: $size bytes, Session: ${sessionId.take(16)})")
         
-        // 2. 安全才反编译
         val rawCode = R2Core.executeCommand(session.corePtr, "pdc @ $address")
         
-        // 3. 使用全局清洗函数限制输出
         val result = sanitizeOutput(rawCode, maxLines = 500, maxChars = 15000)
         
         return createToolResult(true, output = result)
@@ -1182,20 +1144,6 @@ object MCPServer {
         logInfo("反汇编: $address ($lines 行)")
         
         val result = R2Core.executeCommand(session.corePtr, "pd $lines @ $address")
-        
-        return createToolResult(true, output = result)
-    }
-
-    private suspend fun executeGetFunctions(args: JsonObject): JsonElement {
-        val sessionId = args["session_id"]?.jsonPrimitive?.content
-            ?: return createToolResult(false, error = "Missing session_id")
-
-        val session = R2SessionManager.getSession(sessionId)
-            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
-
-        logInfo("获取函数列表 (Session: ${sessionId.take(16)})")
-        
-        val result = R2Core.executeCommand(session.corePtr, "afl")
         
         return createToolResult(true, output = result)
     }
@@ -1225,53 +1173,6 @@ object MCPServer {
         }
     }
 
-    private suspend fun executeListStrings(args: JsonObject): JsonElement {
-        val sessionId = args["session_id"]?.jsonPrimitive?.content
-            ?: return createToolResult(false, error = "Missing session_id")
-
-        val mode = args["mode"]?.jsonPrimitive?.content ?: "data"
-        val minLength = args["min_length"]?.jsonPrimitive?.intOrNull ?: 5 // 默认忽略小于5的
-        
-        val session = R2SessionManager.getSession(sessionId)
-            ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
-
-        val command = when (mode) {
-            "all" -> "izz"   // 全盘搜索（慢但全面）
-            else -> "iz"      // 数据段字符串（快速）
-        }
-        
-        logInfo("列出字符串 (模式: $mode, 最小长度: $minLength, Session: ${sessionId.take(16)})")
-        
-        val rawOutput = R2Core.executeCommand(session.corePtr, command)
-        
-        // 智能清洗：过滤垃圾段和短字符串
-        val cleanOutput = rawOutput.lineSequence()
-            .filter { line ->
-                // 过滤掉垃圾段 (这是最重要的！)
-                !line.contains(".eh_frame") && 
-                !line.contains(".gcc_except_table") &&
-                !line.contains(".text") && // 代码段里的通常是假字符串
-                !line.contains("libunwind") // 过滤库报错信息
-            }
-            .filter { line ->
-                // 提取字符串内容部分进行长度检查
-                // r2 iz 格式: 000 0x... section type string
-                // 简单做法：看行尾长度
-                line.trim().length > 20 || // 保留长行 (可能是元数据)
-                line.split("ascii", "utf8", "utf16", "utf32").lastOrNull()?.trim()?.length ?: 0 >= minLength
-            }
-            .joinToString("\n")
-
-        val finalOutput = if (cleanOutput.isBlank()) {
-            "No meaningful strings found (filters active: min_len=$minLength, exclude=.text/.eh_frame)"
-        } else {
-            // 使用全局清洗函数进行截断保护
-            sanitizeOutput(cleanOutput, maxLines = 500, maxChars = 16000)
-        }
-        
-        return createToolResult(true, output = finalOutput)
-    }
-
     private suspend fun executeGetXrefs(args: JsonObject): JsonElement {
         val sessionId = args["session_id"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing session_id")
@@ -1280,21 +1181,20 @@ object MCPServer {
             ?: return createToolResult(false, error = "Missing address")
         
         val direction = args["direction"]?.jsonPrimitive?.content ?: "to"
-        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50  // 默认限制 50 个引用
+        val limit = args["limit"]?.jsonPrimitive?.intOrNull ?: 50
 
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
         val command = when (direction) {
-            "from" -> "axf @ $address"  // 它调用了谁
-            else -> "axt @ $address"     // 谁调用了它
+            "from" -> "axf @ $address"
+            else -> "axt @ $address"
         }
         
         logInfo("获取交叉引用 (地址: $address, 方向: $direction, 限制: $limit, Session: ${sessionId.take(16)})")
         
         val rawResult = R2Core.executeCommand(session.corePtr, command)
         
-        // 限制输出数量，防止 malloc/memcpy 等通用函数的引用风暴
         val result = sanitizeOutput(rawResult, maxLines = limit, maxChars = 8000)
         
         return createToolResult(true, output = result)
@@ -1318,16 +1218,12 @@ object MCPServer {
         return createToolResult(true, output = result)
     }
 
-    /**
-     * 执行 os_list_dir 工具
-     */
     private suspend fun executeOsListDir(args: JsonObject): JsonElement {
         val pathStr = args["path"]?.jsonPrimitive?.content ?: "/"
         val dir = java.io.File(pathStr)
         val resultLines = mutableListOf<String>()
         var usedRoot = false
 
-        // --- 阶段 1: 尝试 Java 标准 API (快速，无 Root 开销) ---
         val files = dir.listFiles()
         if (files != null) {
             files.forEach { file ->
@@ -1336,8 +1232,6 @@ object MCPServer {
                 resultLines.add("$type $size ${file.name}")
             }
         } else {
-            // --- 阶段 2: Java API 失败 (通常是权限问题)，尝试 Root ---
-            // 使用 ls -p -l 或类似命令。这里用简单的 ls -p 区分文件夹
             val cmd = "ls -p \"$pathStr\""
             val output = ShellUtils.execCommand(cmd, isRoot = true)
 
@@ -1351,7 +1245,6 @@ object MCPServer {
                     }
                 }
             } else {
-                // Root 也失败了
                 return createToolResult(false, error = "❌ 无法访问目录: $pathStr\n错误信息: ${output.errorMsg}")
             }
         }
@@ -1362,9 +1255,6 @@ object MCPServer {
         return createToolResult(true, output = header + body)
     }
 
-    /**
-     * 执行 os_read_file 工具
-     */
     private suspend fun executeOsReadFile(args: JsonObject): JsonElement {
         val pathStr = args["path"]?.jsonPrimitive?.content
         if (pathStr.isNullOrEmpty()) {
@@ -1375,30 +1265,24 @@ object MCPServer {
         var content = ""
         var source = "Standard API"
 
-        // --- 阶段 1: 尝试 Java 读取 ---
         if (file.exists() && file.canRead()) {
             try {
                 content = file.readText()
             } catch (e: Exception) {
-                // 读取异常，准备进入 Root 尝试
             }
         }
 
-        // --- 阶段 2: 如果内容为空且无法读取，尝试 Root cat ---
         if (content.isEmpty()) {
             val output = ShellUtils.execCommand("cat \"$pathStr\"", isRoot = true)
             if (output.isSuccess) {
                 content = output.successMsg
                 source = "Root Access"
             } else {
-                // 彻底失败
                 return createToolResult(false, error = "❌ 读取文件失败: $pathStr\nPermission denied & Root failed.")
             }
         }
 
-        // --- 阶段 3: 大文件截断保护 (关键！) ---
-        // 防止读取巨大的 .so 或 .log 文件导致 OOM
-        val limit = 50000 // 50KB 限制
+        val limit = 50000 
         val truncatedNote = if (content.length > limit) {
             content = content.take(limit)
             "\n\n[⚠️ SYSTEM: 文件过大，已截断显示前 50KB 内容]"
@@ -1407,9 +1291,6 @@ object MCPServer {
         return createToolResult(true, output = "($source)\n$content$truncatedNote")
     }
 
-    /**
-     * 执行 r2_analyze_target 工具
-     */
     private suspend fun executeAnalyzeTarget(args: JsonObject): JsonElement {
         val strategy = args["strategy"]?.jsonPrimitive?.content ?: "basic"
         val address = args["address"]?.jsonPrimitive?.content
@@ -1420,34 +1301,28 @@ object MCPServer {
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
-        // 构造 R2 命令
-        // 如果有地址，就在命令后面加 @地址，否则全局执行
         val addrSuffix = if (!address.isNullOrEmpty()) " @ $address" else ""
 
         val cmd = when (strategy) {
             "basic" -> "aa"
             "blocks" -> "aab$addrSuffix"
             "calls" -> "aac$addrSuffix"
-            "refs" -> "aar$addrSuffix" // aar 通常是全局的，但也可以指定范围
+            "refs" -> "aar$addrSuffix"
             "pointers" -> "aad$addrSuffix"
-            "full" -> "aaa" // 慎用
+            "full" -> "aaa"
             else -> "aa"
         }
 
         logInfo("执行智能分析策略: $strategy (命令: $cmd, 会话: ${sessionId.take(16)})")
 
-        // 1. 执行分析命令
         val startTime = System.currentTimeMillis()
         val analysisOutput = R2Core.executeCommand(session.corePtr, cmd)
         val duration = System.currentTimeMillis() - startTime
         logInfo("分析完成，耗时 ${duration}ms")
 
-        // 2. 获取分析结果反馈 (让 AI 知道发生了什么变化)
-        // 统计当前函数数量 (afl~?) 和代码覆盖大小
         val funcCount = R2Core.executeCommand(session.corePtr, "afl~?").trim()
         val codeSize = R2Core.executeCommand(session.corePtr, "?v \$SS").trim()
 
-        // 3. 构造返回消息
         val resultMsg = StringBuilder()
         resultMsg.append("✅ 分析策略 '$strategy' 执行完毕 (Cmd: $cmd, 耗时: ${duration}ms)。\n")
         resultMsg.append("📊 当前状态：\n")
@@ -1470,9 +1345,6 @@ object MCPServer {
         return createToolResult(true, output = resultMsg.toString())
     }
 
-    /**
-     * 执行 r2_manage_xrefs 工具
-     */
     private suspend fun executeManageXrefs(args: JsonObject): JsonElement {
         val action = args["action"]?.jsonPrimitive?.content ?: "list_to"
         val target = args["target_address"]?.jsonPrimitive?.content ?: ""
@@ -1488,41 +1360,30 @@ object MCPServer {
             return createToolResult(false, error = "必须指定目标地址 (target_address)")
         }
 
-        // 构造源地址后缀，如果没填 source，r2 默认使用当前 seek
         val atSuffix = if (!source.isNullOrEmpty()) " $source" else ""
 
         logInfo("执行交叉引用管理: $action (目标: $target, 源: ${source ?: "当前位置"}, 会话: ${sessionId.take(16)})")
 
-        // 执行逻辑
         val resultText = when (action) {
-            // --- 查询类操作 (使用 JSON 格式获取) ---
             "list_to" -> {
-                // axtj: list xrefs TO this address (JSON)
                 val json = R2Core.executeCommand(session.corePtr, "axtj $target")
                 formatXrefs(json, "引用了 $target 的位置 (Xrefs TO)")
             }
             "list_from" -> {
-                // axfj: list xrefs FROM this address (JSON)
                 val json = R2Core.executeCommand(session.corePtr, "axfj $target")
                 formatXrefs(json, "$target 引用了哪些位置 (Xrefs FROM)")
             }
-
-            // --- 修改类操作 ---
             "add_code" -> runR2Action(session, "axc $target$atSuffix", "已添加代码引用")
             "add_call" -> runR2Action(session, "axC $target$atSuffix", "已添加函数调用引用")
             "add_data" -> runR2Action(session, "axd $target$atSuffix", "已添加数据引用")
             "add_string" -> runR2Action(session, "axs $target$atSuffix", "已添加字符串引用")
             "remove_all" -> runR2Action(session, "ax- $target", "已清除该地址的所有引用")
-
             else -> "❌ 未知操作: $action"
         }
 
         return createToolResult(true, output = resultText)
     }
 
-    /**
-     * 执行 r2_config_manager 工具
-     */
     private suspend fun executeConfigManager(args: JsonObject): JsonElement {
         val action = args["action"]?.jsonPrimitive?.content ?: "get"
         val key = args["key"]?.jsonPrimitive?.content ?: ""
@@ -1542,7 +1403,6 @@ object MCPServer {
 
         val resultText = when (action) {
             "get" -> {
-                // 命令: e key
                 val output = R2Core.executeCommand(session.corePtr, "e $key").trim()
                 if (output.isEmpty()) {
                     "⚠️ 未找到配置项: $key"
@@ -1554,10 +1414,8 @@ object MCPServer {
                 if (value.isEmpty()) {
                     return createToolResult(false, error = "set 操作需要指定值 (value)")
                 }
-                // 命令: e key=value
                 R2Core.executeCommand(session.corePtr, "e $key=$value")
 
-                // 双重确认：读取修改后的值
                 val current = R2Core.executeCommand(session.corePtr, "e $key").trim()
                 if (current == value || (value == "true" && current == "true") || (value == "false" && current == "false")) {
                     "✅ 配置已更新: $key = $current"
@@ -1566,7 +1424,6 @@ object MCPServer {
                 }
             }
             "list" -> {
-                // 命令: e? key (搜索相关配置)
                 val output = R2Core.executeCommand(session.corePtr, "e? $key")
                 "🔎 搜索 '$key' 的结果:\n$output"
             }
@@ -1576,9 +1433,6 @@ object MCPServer {
         return createToolResult(true, output = resultText)
     }
 
-    /**
-     * 执行 r2_analysis_hints 工具
-     */
     private suspend fun executeAnalysisHints(args: JsonObject): JsonElement {
         val action = args["action"]?.jsonPrimitive?.content ?: "list"
         val address = args["address"]?.jsonPrimitive?.content ?: ""
@@ -1590,7 +1444,6 @@ object MCPServer {
         val session = R2SessionManager.getSession(sessionId)
             ?: return createToolResult(false, error = "Invalid session_id: $sessionId")
 
-        // 构造地址后缀
         val addrSuffix = if (address.isNotEmpty()) " @ $address" else ""
         val checkAddr = address
 
@@ -1637,8 +1490,6 @@ object MCPServer {
                 if (value.isEmpty()) {
                     return createToolResult(false, error = "必须指定新的指令字符串 (value)")
                 }
-                // ahd 需要特殊处理，因为它接受包含空格的字符串
-                // 格式: ahd string @ address
                 R2Core.executeCommand(session.corePtr, "ahd $value$addrSuffix")
                 "✅ 已将指令文本替换为: \"$value\""
             }
@@ -1649,8 +1500,6 @@ object MCPServer {
             else -> "❌ 未知操作: $action"
         }
 
-        // --- 关键：执行完提示后，立即查看效果 ---
-        // pd 1 @ address (打印 1 条指令)
         val previewCmd = if (checkAddr.isNotEmpty()) "pd 1 @ $checkAddr" else "pd 1"
         val preview = R2Core.executeCommand(session.corePtr, previewCmd).trim()
 
@@ -1658,30 +1507,21 @@ object MCPServer {
         return createToolResult(true, output = finalOutput)
     }
 
-    /**
-     * 执行 sqlite_query 工具
-     */
     private suspend fun executeSqliteQuery(args: JsonObject): JsonElement {
         val dbPath = args["db_path"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing db_path")
         val query = args["query"]?.jsonPrimitive?.content
             ?: return createToolResult(false, error = "Missing query")
 
-        // 转义处理：SQL 语句中可能包含特殊字符，需要小心处理
-        // 我们使用双引号包裹 SQL，所以要把 SQL 里的双引号转义为 \"
         val safeQuery = query.replace("\"", "\\\"")
 
-        // 命令格式: sqlite3 -header -column "路径" "SQL语句"
-        // 使用 Root 执行，因为通常是读取 /data/data
         val command = "sqlite3 -header -column \"$dbPath\" \"$safeQuery\""
 
         logInfo("执行 SQL: $command")
 
-        // 调用 ShellUtils (强制使用 Root)
         val result = ShellUtils.execCommand(command, isRoot = true)
 
         return if (result.isSuccess) {
-            // 使用 sanitizeOutput 防止查询结果 (如 SELECT * FROM huge_table) 撑爆内存
             val cleanOutput = sanitizeOutput(result.successMsg, maxLines = 1000, maxChars = 32000)
             createToolResult(true, output = cleanOutput)
         } else {
@@ -1689,9 +1529,6 @@ object MCPServer {
         }
     }
 
-    /**
-     * 格式化 Xref JSON 输出，让 AI 更容易读懂
-     */
     private fun formatXrefs(jsonStr: String, title: String): String {
         if (jsonStr.trim().isEmpty() || jsonStr == "[]") {
             return "ℹ️ $title: 无数据"
@@ -1699,7 +1536,6 @@ object MCPServer {
 
         try {
             val sb = StringBuilder("📊 $title:\n")
-            // 使用简单的字符串处理来解析JSON数组
             val items = jsonStr.trim().removePrefix("[").removeSuffix("]").split("},")
 
             for ((index, item) in items.withIndex()) {
@@ -1719,13 +1555,11 @@ object MCPServer {
                 val from = fields["from"]?.toLongOrNull() ?: 0
                 val to = fields["to"]?.toLongOrNull() ?: 0
 
-                // 根据查询类型决定显示哪个地址
                 val refAddr = if (title.contains("TO")) from else to
                 val hexAddr = "0x%08x".format(refAddr)
 
                 sb.append("- [$type] $hexAddr")
 
-                // 添加额外信息
                 fields["opcode"]?.let { opcode ->
                     sb.append(" : ${opcode.trim()}")
                 }
@@ -1739,14 +1573,10 @@ object MCPServer {
             return sb.toString()
         } catch (e: Exception) {
             logError("Xref JSON 解析失败", e.message)
-            // 如果 JSON 解析失败，直接返回原始文本
             return "⚠️ 解析数据失败，原始返回:\n$jsonStr"
         }
     }
 
-    /**
-     * 执行简单的 R2 命令并返回成功消息
-     */
     private fun runR2Action(session: R2SessionManager.R2Session, cmd: String, successMsg: String): String {
         R2Core.executeCommand(session.corePtr, cmd)
         return "✅ $successMsg (Cmd: $cmd)"
