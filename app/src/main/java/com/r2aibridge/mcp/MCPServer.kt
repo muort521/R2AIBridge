@@ -591,21 +591,25 @@ object MCPServer {
                 listOf("action", "session_id")
             ),
             createToolSchema(
-                "os_list_dir",
-                "📁 [文件系统] 列出指定文件夹下的内容。支持 Root。",
-                mapOf(
-                    "path" to mapOf("type" to "string", "description" to "目录路径")
-                ),
-                listOf("path")
-            ),
+    "os_list_dir",
+    "📁 [文件列出] 列出目录内容。能力：自动识别并使用 Root 权限。\n" +
+    "技巧：如果不确定 Native 库位置，请先列出 '/data/app/' 目录，找到对应的包名目录（通常包含随机字符），进入后再找 'lib' 目录。",
+    mapOf(
+        "path" to mapOf("type" to "string", "description" to "目录路径")
+    ),
+    listOf("path")
+),
             createToolSchema(
-                "os_read_file",
-                "📄 [文件系统] 读取文件内容。支持 Root。",
-                mapOf(
-                    "path" to mapOf("type" to "string", "description" to "文件路径")
-                ),
-                listOf("path")
-            ),
+    "r2_open_file",
+    "📄 [读取文件] 读取文件内容。支持 Root。\n" +
+    "路径警告：Android 的库文件通常位于 '/data/app/~~[随机串]/[包名]-[随机串]/lib/arm64/'，而不是 '/data/data'。\n" +
+    "请先使用 os_list_dir('/data/app') 找到正确的安装路径。",
+    mapOf(
+        "file_path" to mapOf("type" to "string", "description" to "文件路径"),
+        "auto_analyze" to mapOf("type" to "boolean", "description" to "是否自动分析", "default" to true)
+    ),
+    listOf("file_path")
+),
             createToolSchema(
                 "termux_command", 
                 "💻 [Shell] 在 Termux 环境中执行系统命令 (Python, Node, Curl, SQLCipher 等)。\n" +
@@ -695,8 +699,25 @@ object MCPServer {
         val toolName = params["name"]?.jsonPrimitive?.content 
             ?: return createToolResult(false, error = "Missing tool name")
         
-        val arguments = params["arguments"]?.jsonObject 
-            ?: return createToolResult(false, error = "Missing arguments")
+        val rawArgs = params["arguments"]
+        val args: JsonObject = try {
+    when (rawArgs) {
+        is JsonObject -> rawArgs
+        is JsonPrimitive -> {
+            if (rawArgs.isString) {
+                // AI 有时会把 JSON 对象发成字符串，这里尝试二次解析
+                json.decodeFromString<JsonObject>(rawArgs.content)
+            } else {
+                JsonObject(emptyMap()) // 空参数
+            }
+        }
+        else -> JsonObject(emptyMap())
+    }
+} catch (e: Exception) {
+    // 如果解析失败，记录日志并返回空对象，避免 Crash
+    logError("参数解析失败", e.message)
+    JsonObject(emptyMap())
+}
 
         logInfo("执行工具: $toolName")
         onLogEvent("执行: $toolName")
@@ -704,26 +725,26 @@ object MCPServer {
         return try {
             val result = when (toolName) {
                 // --- [新增] 分发逻辑 ---
-                "termux_command" -> runBlocking { executeTermuxCommand(arguments) }
-                "termux_save_script" -> runBlocking { executeSaveScript(arguments) }
-                "r2_open_file" -> executeOpenFile(arguments, onLogEvent)
-                "r2_analyze_file" -> executeAnalyzeFile(arguments, onLogEvent)
-                "r2_run_command" -> executeCommand(arguments)
-                "r2_list_functions" -> executeListFunctions(arguments)
-                "r2_list_strings" -> executeListStrings(arguments)
-                "r2_get_xrefs" -> executeGetXrefs(arguments)
-                "r2_get_info" -> executeGetInfo(arguments)
-                "r2_decompile_function" -> executeDecompileFunction(arguments)
-                "r2_disassemble" -> executeDisassemble(arguments)
-                "r2_test" -> executeTestR2(arguments)
-                "r2_close_session" -> executeCloseSession(arguments)
-                "r2_analyze_target" -> executeAnalyzeTarget(arguments)
-                "r2_manage_xrefs" -> executeManageXrefs(arguments)
-                "r2_config_manager" -> executeConfigManager(arguments)
-                "r2_analysis_hints" -> executeAnalysisHints(arguments)
-                "sqlite_query" -> executeSqliteQuery(arguments)
-                "os_list_dir" -> executeOsListDir(arguments)
-                "os_read_file" -> executeOsReadFile(arguments)
+                "termux_command" -> runBlocking { executeTermuxCommand(args) }
+                "termux_save_script" -> runBlocking { executeSaveScript(args) }
+                "r2_open_file" -> executeOpenFile(args, onLogEvent)
+                "r2_analyze_file" -> executeAnalyzeFile(args, onLogEvent)
+                "r2_run_command" -> executeCommand(args)
+                "r2_list_functions" -> executeListFunctions(args)
+                "r2_list_strings" -> executeListStrings(args)
+                "r2_get_xrefs" -> executeGetXrefs(args)
+                "r2_get_info" -> executeGetInfo(args)
+                "r2_decompile_function" -> executeDecompileFunction(args)
+                "r2_disassemble" -> executeDisassemble(args)
+                "r2_test" -> executeTestR2(args)
+                "r2_close_session" -> executeCloseSession(args)
+                "r2_analyze_target" -> executeAnalyzeTarget(args)
+                "r2_manage_xrefs" -> executeManageXrefs(args)
+                "r2_config_manager" -> executeConfigManager(args)
+                "r2_analysis_hints" -> executeAnalysisHints(args)
+                "sqlite_query" -> executeSqliteQuery(args)
+                "os_list_dir" -> executeOsListDir(args)
+                "os_read_file" -> executeOsReadFile(largs)
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
             fixContentFormat(result)
