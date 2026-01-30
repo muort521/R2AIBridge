@@ -10,13 +10,13 @@ android {
     compileSdk = 36
 
     signingConfigs {
-        create("release") {
-            storeFile = file("../keystore/r2aibridge.jks")
-            storePassword = "android"
-            keyAlias = "r2aibridge"
-            keyPassword = "android"
-        }
+    create("release") {
+        storeFile = file("../keystore/r2aibridge.jks")
+        storePassword = System.getenv("KEY_STORE_PASSWORD") ?: "android" // 兼容本地硬编码作为默认值
+        keyAlias = System.getenv("KEY_ALIAS") ?: "r2aibridge"
+        keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
     }
+}
 
     defaultConfig {
         applicationId = "com.r2aibridge"
