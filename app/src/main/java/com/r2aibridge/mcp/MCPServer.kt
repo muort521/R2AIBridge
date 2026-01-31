@@ -1120,11 +1120,17 @@ object MCPServer {
 
                             // 5. 获取结果
                             val regsOutput = R2Core.executeCommand(session.corePtr, "aer")
+                            
+                            // 【核心修改】先跳转到 PC，再查看指令
+                            // "s pc" 会告诉 R2：把光标移到当前寄存器 pc 指向的地址
+                            R2Core.executeCommand(session.corePtr, "s pc")
+                            
+                            // 现在获取的就是真正"停下"位置的指令了
                             val currentOp = R2Core.executeCommand(session.corePtr, "pd 1")
 
                             sb.append("\n--- Final Registers ---\n")
                             sb.append(regsOutput)
-                            sb.append("\n--- Stopped At ---\n")
+                            sb.append("\n--- Stopped At (PC) ---\n") // 改个名更准确
                             sb.append(currentOp)
 
                             createToolResult(true, output = sb.toString())
