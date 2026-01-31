@@ -16,6 +16,61 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
 
+// 定义一个简单的 Prompt 结构
+data class R2Prompt (
+    val name: String,
+    val description: String,
+    val promptText: String
+)
+
+// 预设的"黄金工作流"列表
+val availablePrompts = listOf(
+    R2Prompt(
+        name = "analyze_full",
+        description = "🚀 全自动分析 (Auto Analysis)",
+        promptText = """
+            请对当前文件执行完整的自动化分析流程：
+            1. 运行 `aaa` 进行深度分析。
+            2. 运行 `i` 获取二进制文件基本信息（架构、大小、类型）。
+            3. 运行 `afl` 列出所有识别到的函数。
+            4. 运行 `iz` 列出部分字符串（前10个）。
+            执行完上述命令后，请为我总结这个文件的主要功能和特征。
+        """.trimIndent()
+    ),
+    R2Prompt(
+        name = "check_security",
+        description = "🛡️ 检查安全保护 (Check Security)",
+        promptText = """
+            请检查当前二进制文件的安全加固措施：
+            1. 运行 `i` 查看 permissions 和 canary/nx/pic 等标志位。
+            2. 分析是否开启了 PIE (Position Independent Executable)。
+            3. 检查是否有符号表残留。
+            请以此判断该 App/Library 的逆向难度。
+        """.trimIndent()
+    ),
+    R2Prompt(
+        name = "find_vulnerability",
+        description = "🐛 寻找潜在漏洞 (Find Vulns)",
+        promptText = """
+            请尝试寻找常见的漏洞模式：
+            1. 使用 `/ strcpy` 或 `/ system` 等命令搜索危险函数调用。
+            2. 检查是否有硬编码的敏感字符串 (使用 `iz`)。
+            3. 重点关注 JNI 接口函数 (Java_...)。
+        """.trimIndent()
+    ),
+    R2Prompt(
+        name = "prepare_patch",
+        description = "🔧 准备 Patch 环境 (Setup Patching)",
+        promptText = """
+            我已经准备好修改代码，请帮我做好准备工作：
+            1. 运行 `e io.cache=true` 开启缓存模式（安全防呆）。
+            2. 运行 `oo+` 尝试以读写模式重载文件。
+            3. 检查当前架构 `e asm.arch` 和位宽 `e asm.bits` 是否正确。
+            请确认上述步骤完成后，告诉我“准备就绪，请下达 Patch 指令”。
+        """.trimIndent()
+    )
+)
+
 object MCPServer {
         // --- [新增] Termux 常量与辅助函数 ---
         // AI 脚本沙盒路径
@@ -306,6 +361,116 @@ object MCPServer {
                             val toolLogMsg = "🔧 工具调用: $toolName | $clientIp"
                             onLogEvent(toolLogMsg)
                             handleToolCall(request.params, onLogEvent)
+                        }
+                        "prompts/list" -> {
+                            val promptsJson = JsonArray(availablePrompts.map { prompt ->
+                                buildJsonObject {
+                                    put("name", prompt.name)
+                                    put("description", prompt.description)
+                                    
+                                    // 🛠️【修改点】添加一个"占位参数"，把 UI 激活！
+                                    put("arguments", JsonArray(listOf(
+                                        buildJsonObject {
+                                            put("name", "note") // 参数名
+                                            put("description", "备注 (可选)") // 显示给用户看
+                                            put("required", false) // 设为 false，用户不填也能提交
+                                        }
+                                    )))
+                                }
+                            })
+
+                            val result = buildJsonObject {
+                                put("prompts", promptsJson)
+                            }
+                            result
+                        }
+                        "prompts/get" -> {
+                            try {
+                                // 1. 获取参数
+                                val params = request.params
+                                val promptName = params?.get("name")?.jsonPrimitive?.content
+                                
+                                Log.e("R2AI", "收到 prompts/get 请求: $promptName") // <--- 关键日志 1
+
+                                if (promptName == null) {
+                                    val errorObj = buildJsonObject {
+                                        put("code", -32602)
+                                        put("message", "Missing 'name' parameter")
+                                    }
+                                    val errorResp = buildJsonObject {
+                                        put("jsonrpc", "2.0")
+                                        put("id", request.id ?: JsonNull)
+                                        put("error", errorObj)
+                                    }
+                                    call.respondText(
+                                        text = errorResp.toString(),
+                                        contentType = ContentType.Application.Json,
+                                        status = HttpStatusCode.OK
+                                    )
+                                    return@post
+                                }
+
+                                // 2. 查找对应的 Prompt
+                                val targetPrompt = availablePrompts.find { it.name == promptName }
+
+                                if (targetPrompt != null) {
+                                    Log.e("R2AI", "找到 Prompt，准备发送: ${targetPrompt.description}") // <--- 关键日志 2
+
+                                    // 3. 构建响应
+                                    val result = buildJsonObject {
+                                        put("description", targetPrompt.description)
+                                        put("messages", JsonArray(listOf(
+                                            buildJsonObject {
+                                                put("role", "user")
+                                                put("content", buildJsonObject {
+                                                    put("type", "text")
+                                                    put("text", targetPrompt.promptText)
+                                                })
+                                            }
+                                        )))
+                                    }
+                                    
+                                    // 发送
+                                    Log.e("R2AI", "发送成功") // <--- 关键日志 3
+                                    result
+
+                                } else {
+                                    Log.e("R2AI", "未找到 Prompt: $promptName")
+                                    val errorObj = buildJsonObject {
+                                        put("code", -32602)
+                                        put("message", "Prompt not found: $promptName")
+                                    }
+                                    val errorResp = buildJsonObject {
+                                        put("jsonrpc", "2.0")
+                                        put("id", request.id ?: JsonNull)
+                                        put("error", errorObj)
+                                    }
+                                    call.respondText(
+                                        text = errorResp.toString(),
+                                        contentType = ContentType.Application.Json,
+                                        status = HttpStatusCode.OK
+                                    )
+                                    return@post
+                                }
+
+                            } catch (e: Exception) {
+                                Log.e("R2AI", "prompts/get 发生崩溃", e) // <--- 关键日志 4 (捕获崩溃)
+                                val errorObj = buildJsonObject {
+                                    put("code", -32603)
+                                    put("message", "Internal error: ${e.message}")
+                                }
+                                val errorResp = buildJsonObject {
+                                    put("jsonrpc", "2.0")
+                                    put("id", request.id ?: JsonNull)
+                                    put("error", errorObj)
+                                }
+                                call.respondText(
+                                    text = errorResp.toString(),
+                                    contentType = ContentType.Application.Json,
+                                    status = HttpStatusCode.OK
+                                )
+                                return@post
+                            }
                         }
                         else -> {
                             logError("未知方法", method)
