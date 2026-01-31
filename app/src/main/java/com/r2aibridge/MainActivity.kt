@@ -538,7 +538,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "可用的 MCP 工具 (21个)",
+                        text = "可用的 MCP 工具 (22个)",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -577,7 +577,8 @@ fun MainScreen(
                         "💻 termux_command - Termux 环境命令 (AI 沙盒)",
                         "💾 termux_save_script - 保存代码 (赋权/所有者)",
                         "🗄️ sqlite_query - SQL 查询 (读取私有数据库)",
-                        "📝 read_logcat - 读取 Android 系统日志 (Logcat)"
+                        "📝 read_logcat - 读取 Android 系统日志 (Logcat)",
+                        "🏷️ rename_function - 智能重命名函数 (语义理解)"
                         
                     )
                     

@@ -68,6 +68,17 @@ val availablePrompts = listOf(
             3. 检查当前架构 `e asm.arch` 和位宽 `e asm.bits` 是否正确。
             请确认上述步骤完成后，告诉我“准备就绪，请下达 Patch 指令”。
         """.trimIndent()
+    ),
+    R2Prompt(
+        name = "smart_rename",
+        description = "🏷️ 智能重命名 (Smart Rename)",
+        promptText = """
+            请对当前函数进行语义分析并重命名：
+            1. 运行 `pdf` 获取当前函数的汇编代码。
+            2. 仔细阅读汇编逻辑，推断该函数的功能（例如：是网络请求？是MD5计算？还是UI点击事件？）。
+            3. 如果你能确定其功能，请立即调用 `rename_function` 将其重命名为更有意义的名字（如 `calc_md5`, `check_license`）。
+            4. 如果无法确定，请保留原名并告诉我分析到了什么。
+        """.trimIndent()
     )
 )
 
@@ -822,6 +833,16 @@ object MCPServer {
                     "use_root" to mapOf("type" to "boolean", "description" to "是否使用 Root 权限读取 (读取其他 App 崩溃必须为 true)")
                 ),
                 listOf()
+            ),
+            createToolSchema(
+                "rename_function",
+                "🏷️[智能重命名函数]当你分析出某个函数的具体用途时（例如：加密、登录验证、初始化），请务必调用此工具将其重命名，以便后续分析。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "目标函数地址 (例如 '0x00401000' 或 'sym.main')。留空则默认为当前 seek 的位置。"),
+                    "name" to mapOf("type" to "string", "description" to "新的函数名 (只能包含字母、数字、下划线，例如 'AES_Encrypt')")
+                ),
+                listOf("session_id", "name")
             )
         )
         
@@ -994,6 +1015,42 @@ object MCPServer {
                     } catch (e: Exception) {
                         logError("Logcat 失败", e.message)
                         createToolResult(false, error = "Logcat 执行失败: ${e.message}")
+                    }
+                }
+                "rename_function" -> {
+                    val rawName = args["name"]?.jsonPrimitive?.content ?: "func_renamed"
+                    val address = args["address"]?.jsonPrimitive?.content ?: ""
+                    val sessionId = args["session_id"]?.jsonPrimitive?.content
+
+                    // 1. 名称清洗 (Sanitization)
+                    val safeName = rawName.trim()
+                        .replace(" ", "_")
+                        .replace(Regex("[^a-zA-Z0-9_.]"), "")
+
+                    if (safeName.isEmpty()) {
+                        createToolResult(false, error = "Invalid function name provided.")
+                    } else if (sessionId == null) {
+                        createToolResult(false, error = "Session ID is required.")
+                    } else {
+                        val session = R2SessionManager.getSession(sessionId)
+                        if (session == null) {
+                            createToolResult(false, error = "No active Radare2 session found. Please open a file first.")
+                        } else {
+                            // 2. 构建命令
+                            val command = if (address.isNotBlank()) {
+                                "afn $safeName $address"
+                            } else {
+                                "afn $safeName"
+                            }
+
+                            logInfo("执行重命名: $command")
+
+                            // 3. 执行
+                            val r2Result = R2Core.executeCommand(session.corePtr, command)
+
+                            // 4. 验证结果
+                            createToolResult(true, output = "成功将函数重命名为: $safeName\nR2 Output: $r2Result")
+                        }
                     }
                 }
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
