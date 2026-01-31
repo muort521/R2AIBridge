@@ -2,10 +2,43 @@
 #include <string>
 #include <android/log.h>
 #include <cstdlib>
+#include <dlfcn.h> // [新增] 用于动态加载 libc
 
 #define LOG_TAG "R2AI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+// --- [新增 START] FDSan 禁用逻辑 ---
+// 手动定义 fdsan 错误级别，兼容旧版 NDK
+enum android_fdsan_error_level {
+    ANDROID_FDSAN_ERROR_LEVEL_DISABLED = 0,
+    ANDROID_FDSAN_ERROR_LEVEL_WARN_ONCE = 1,
+    ANDROID_FDSAN_ERROR_LEVEL_WARN_ALWAYS = 2,
+    ANDROID_FDSAN_ERROR_LEVEL_FATAL = 3,
+};
+
+// 定义函数指针类型
+typedef enum android_fdsan_error_level (*fdsan_set_error_level_func)(enum android_fdsan_error_level new_level);
+
+/**
+ * 动态查找并禁用 Android 的 fdsan 机制
+ * 解决 Radare2 在 Android 10+ 上因重复关闭文件描述符导致的 SIGABRT 崩溃
+ */
+void disable_android_fdsan() {
+    void* libc_handle = dlopen("libc.so", RTLD_NOLOAD);
+    if (libc_handle) {
+        auto func = (fdsan_set_error_level_func) dlsym(libc_handle, "android_fdsan_set_error_level");
+        if (func) {
+            func(ANDROID_FDSAN_ERROR_LEVEL_DISABLED);
+            LOGI("SUCCESS: Android fdsan has been DISABLED. No more SIGABRT from double-close!");
+        } else {
+            LOGI("android_fdsan_set_error_level not found (older Android version?)");
+        }
+    } else {
+        LOGE("Could not open libc.so to disable fdsan");
+    }
+}
+// --- [新增 END] ---
 
 // Forward declarations - minimal radare2 API
 struct r_core_t;
@@ -24,6 +57,9 @@ extern "C" {
  */
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_r2aibridge_R2Core_initR2Core(JNIEnv* env, jobject /* this */) {
+    // --- [新增] 初始化时立即禁用 fdsan ---
+    disable_android_fdsan();
+
     r_core_t* core = r_core_new();
     if (!core) {
         LOGE("Failed to create R2 core");

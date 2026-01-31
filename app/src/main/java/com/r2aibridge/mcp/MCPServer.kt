@@ -812,6 +812,16 @@ object MCPServer {
                 "🧪 [诊断工具] 测试 Radare2 库是否正常工作。",
                 mapOf(),
                 listOf()
+            ),
+            createToolSchema(
+                "read_logcat",
+                "📝[Logcat]读取Android系统日志。用于分析崩溃堆栈、调试 Patch 结果或监控应用行为。",
+                mapOf(
+                    "lines" to mapOf("type" to "integer", "description" to "读取日志的行数 (建议 100-500，默认 200)"),
+                    "filter" to mapOf("type" to "string", "description" to "关键词过滤 (可选，例如 'com.example.app' 或 '致命信号')"),
+                    "use_root" to mapOf("type" to "boolean", "description" to "是否使用 Root 权限读取 (读取其他 App 崩溃必须为 true)")
+                ),
+                listOf()
             )
         )
         
@@ -909,6 +919,83 @@ object MCPServer {
                 "sqlite_query" -> executeSqliteQuery(args)
                 "os_list_dir" -> executeOsListDir(args)
                 "os_read_file" -> executeOsReadFile(args)
+                "read_logcat" -> {
+                    try {
+                        val lines = args["lines"]?.jsonPrimitive?.int ?: 200
+                        val filter = args["filter"]?.jsonPrimitive?.content ?: ""
+                        val useRoot = args["use_root"]?.jsonPrimitive?.boolean ?: false
+
+                        // 1. 定义噪音关键词列表 (黑名单)
+                        // 这些 tag 或关键词通常是无用的系统噪音或自身协议日志
+                        val noiseKeywords = listOf(
+                            "R2AI",             // 自身的 Tag
+                            "R2Service",        // 后台服务 Tag
+                            "System.out",       // 自身的 stdout
+                            "MainActivity",     // 自身的 UI 逻辑
+                            "jsonrpc",          // MCP 协议内容
+                            "ViewRootImpl",     // Android UI 渲染噪音
+                            "Oplus",            // 厂商(OPPO/OnePlus) 系统噪音
+                            "InputMethod",      // 输入法噪音
+                            "ImeTracker",       // 输入法追踪
+                            "ResourcesManager"  // 资源加载噪音
+                        )
+
+                        // 2. 构建命令
+                        val command = if (useRoot) {
+                            if (filter.isNotEmpty()) {
+                                "su -c logcat -d -v threadtime -t $lines | grep \"$filter\""
+                            } else {
+                                "su -c logcat -d -v threadtime -t $lines"
+                            }
+                        } else {
+                            "logcat -d -v threadtime -t $lines"
+                        }
+
+                        logInfo("执行 Logcat: $command")
+
+                        // 3. 执行命令
+                        val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", command))
+                        val output = process.inputStream.bufferedReader().use { it.readText() }
+                        process.waitFor()
+
+                        // 4. 执行智能过滤
+                        val filteredOutput = output.lineSequence()
+                            .filter { line ->
+                                // 规则 A: 如果用户指定了 filter，则只保留匹配行
+                                if (!useRoot && filter.isNotEmpty() && !line.contains(filter, ignoreCase = true)) {
+                                    return@filter false
+                                }
+                                
+                                // 规则 B: 始终保留"崩溃"和"严重错误"信息
+                                if (line.contains("FATAL") || 
+                                    line.contains(" crash ") || 
+                                    line.contains("F DEBUG") || // Native Crash 堆栈
+                                    line.contains("E AndroidRuntime")) {
+                                    return@filter true
+                                }
+
+                                // 规则 C: 过滤掉黑名单中的噪音
+                                val isNoise = noiseKeywords.any { noise -> line.contains(noise) }
+                                !isNoise
+                            }
+                            .joinToString("\n")
+
+                        // 5. 结果截断与返回
+                        val finalResult = if (filteredOutput.isBlank()) {
+                            "日志为空 (已过滤噪音)。"
+                        } else if (filteredOutput.length > 50000) {
+                            "...(前略)...\n" + filteredOutput.takeLast(50000)
+                        } else {
+                            filteredOutput
+                        }
+
+                        createToolResult(true, output = finalResult)
+
+                    } catch (e: Exception) {
+                        logError("Logcat 失败", e.message)
+                        createToolResult(false, error = "Logcat 执行失败: ${e.message}")
+                    }
+                }
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
             fixContentFormat(result)
