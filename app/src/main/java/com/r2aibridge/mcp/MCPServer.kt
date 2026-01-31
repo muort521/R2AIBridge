@@ -12,6 +12,7 @@ import io.ktor.server.request.*
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.*
+import org.json.JSONObject
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.*
@@ -156,6 +157,9 @@ object MCPServer {
         prettyPrint = true
         coerceInputValues = true
     }
+    
+    // 当前打开的文件路径，用于记忆宫殿功能
+    private var currentFilePath: String = ""
 
     private fun logInfo(msg: String) {
         val timestamp = dateFormat.format(Date())
@@ -851,7 +855,7 @@ object MCPServer {
             ),
             createToolSchema(
                 "rename_function",
-                "🏷️[智能重命名函数]当你分析出某个函数的具体用途时（例如：加密、登录验证、初始化），请务必调用此工具将其重命名，以便后续分析。",
+                "🏷️[智能重命名函数]当你分析出某个函数的具体用途或函数功能时（例如：加密、登录验证、初始化），请务必调用此工具将其重命名，操作会自动持久化保存到本地知识库。以便在后续分析或重启会话后保留上下文。",
                 mapOf(
                     "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
                     "address" to mapOf("type" to "string", "description" to "目标函数地址 (例如 '0x00401000' 或 'sym.main')。留空则默认为当前 seek 的位置。"),
@@ -869,6 +873,15 @@ object MCPServer {
                     "init_regs" to mapOf("type" to "string", "description" to "可选：初始化寄存器状态 (例如 'x0=0x1, x1=0x2000')")
                 ),
                 listOf("session_id", "steps")
+            ),
+            createToolSchema(
+                "add_knowledge_note",
+                "📝[添加笔记]向持久化知识库添加笔记。用于记录关键发现（如密钥、算法原理、重要结构体成员）。这些笔记会在下次打开文件时自动加载并展示给你，防止信息丢失。",
+                mapOf(
+                    "address" to mapOf("type" to "string", "description" to "相关地址 (例如 '0x1234')"),
+                    "note" to mapOf("type" to "string", "description" to "笔记内容 (例如 'AES Key 生成函数，返回值是 Key')")
+                ),
+                listOf("address", "note")
             )
         )
         
@@ -1062,21 +1075,43 @@ object MCPServer {
                         if (session == null) {
                             createToolResult(false, error = "No active Radare2 session found. Please open a file first.")
                         } else {
-                            // 2. 构建命令
-                            val command = if (address.isNotBlank()) {
-                                "afn $safeName $address"
-                            } else {
-                                "afn $safeName"
+                            // 2. 获取当前 Seek 地址 (如果 address 为空)
+                            val targetAddr = if (address.isNotBlank()) address else {
+                                // 如果没传地址，先查一下当前在哪，为了存入 JSON 需要确切地址
+                                val offset = R2Core.executeCommand(session.corePtr, "?v $$").trim() // $$ = current seek
+                                offset
                             }
 
+                            // 3. 执行 R2 命令
+                            val command = "afn $safeName $targetAddr"
                             logInfo("执行重命名: $command")
-
-                            // 3. 执行
                             val r2Result = R2Core.executeCommand(session.corePtr, command)
 
+                            // --- 🧠 [新增] 记忆保存逻辑 ---
+                            if (currentFilePath.isNotBlank()) {
+                                saveKnowledge(currentFilePath, "renames", targetAddr, safeName)
+                            }
+
                             // 4. 验证结果
-                            createToolResult(true, output = "成功将函数重命名为: $safeName\nR2 Output: $r2Result")
+                            createToolResult(true, output = "成功将函数重命名为: $safeName\n已存入持久化知识库。\nR2 Output: $r2Result")
                         }
+                    }
+                }
+                "add_knowledge_note" -> {
+                    val address = args["address"]?.jsonPrimitive?.content ?: ""
+                    val note = args["note"]?.jsonPrimitive?.content ?: ""
+
+                    if (currentFilePath.isNotBlank() && address.isNotBlank() && note.isNotBlank()) {
+                        // 1. 保存到 JSON
+                        saveKnowledge(currentFilePath, "notes", address, note)
+                        
+                        // 2. 可选：同时也作为注释写入 R2 (CC 命令)
+                        // val r2Cmd = "CC $note @ $address"
+                        // R2Core.executeCommand(session.corePtr, r2Cmd)
+
+                        createToolResult(true, output = "笔记已保存到记忆宫殿: [$address] $note")
+                    } else {
+                        createToolResult(false, error = "需要已打开文件、地址和笔记内容。")
                     }
                 }
                 "simulate_execution" -> {
@@ -1277,6 +1312,14 @@ object MCPServer {
             }
         }
 
+        // --- 🧠 [新增] 记忆加载逻辑 ---
+        val memory = loadKnowledge(filePath)
+        
+        // 执行恢复命令 (重命名)
+        for (cmd in memory.r2Commands) {
+            R2Core.executeCommand(session!!.corePtr, cmd)
+        }
+        
         val analysisResult = if (autoAnalyze) {
             logInfo("执行基础分析 (aa)...")
             val startTime = System.currentTimeMillis()
@@ -1290,7 +1333,10 @@ object MCPServer {
 
         val info = R2Core.executeCommand(session!!.corePtr, "i")
         
-        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
+        // 记录当前文件路径，供保存时使用
+        currentFilePath = filePath
+        
+        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n${memory.summary}\n=== 文件信息 ===\n$info")
     }
 
     private suspend fun executeOpenFileWithFile(file: java.io.File, filePath: String, autoAnalyze: Boolean, onLogEvent: (String) -> Unit): JsonElement {
@@ -1319,6 +1365,14 @@ object MCPServer {
             logInfo("使用现有会话: $sessionId")
         }
 
+        // --- 🧠 [新增] 记忆加载逻辑 ---
+        val memory = loadKnowledge(filePath)
+        
+        // 执行恢复命令 (重命名)
+        for (cmd in memory.r2Commands) {
+            R2Core.executeCommand(session!!.corePtr, cmd)
+        }
+        
         val analysisResult = if (autoAnalyze) {
             logInfo("执行基础分析 (aa)...")
             val startTime = System.currentTimeMillis()
@@ -1332,7 +1386,10 @@ object MCPServer {
 
         val info = R2Core.executeCommand(session!!.corePtr, "i")
         
-        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n=== 文件信息 ===\n$info")
+        // 记录当前文件路径，供保存时使用
+        currentFilePath = filePath
+        
+        return createToolResult(true, output = "Session: $sessionId\n\nFile: ${file.absolutePath}$analysisResult\n\n${memory.summary}\n=== 文件信息 ===\n$info")
     }
 
     private suspend fun executeAnalyzeFile(args: JsonObject, onLogEvent: (String) -> Unit): JsonElement {
@@ -2133,5 +2190,84 @@ object MCPServer {
         } else {
             createToolResult(false, error = "保存失败:\n${result.errorMsg}")
         }
+    }
+
+    // --- 🧠 记忆宫殿辅助函数 (Internal Storage Ver.) ---
+
+    // 使用 App 的私有目录。建议加一级子目录 'knowledge' 保持整洁
+    // 如果您在 Service/Activity 中有 Context，也可以用 context.filesDir.absolutePath + "/knowledge"
+    val KNOWLEDGE_BASE_DIR = "/data/data/com.r2aibridge/files/knowledge"
+
+    // 获取知识库文件对象
+    fun getKnowledgeFile(targetPath: String): File {
+        // 使用目标文件的哈希或文件名作为 JSON 文件名
+        // 为了防止路径中的 "/" 搞乱文件名，这里简单处理：把 "/" 替换为 "_"
+        // 例如: /system/lib/libc.so -> _system_lib_libc.so.json
+        val safeName = targetPath.replace("/", "_") + ".json"
+        
+        val dir = File(KNOWLEDGE_BASE_DIR)
+        if (!dir.exists()) {
+            // 创建目录 (不需要 root，因为是在自己的沙箱里)
+            dir.mkdirs()
+        }
+        return File(dir, safeName)
+    }
+
+    // 保存知识 (保持不变)
+    fun saveKnowledge(targetPath: String, type: String, address: String, content: String) {
+        try {
+            val file = getKnowledgeFile(targetPath)
+            val json = if (file.exists()) JSONObject(file.readText()) else JSONObject()
+            
+            if (!json.has(type)) json.put(type, JSONObject())
+            
+            json.getJSONObject(type).put(address, content)
+            
+            file.writeText(json.toString(2))
+            Log.i("R2AI", "Memory saved to internal storage: $type[$address]")
+        } catch (e: Exception) {
+            Log.e("R2AI", "Failed to save knowledge", e)
+        }
+    }
+
+    // 加载知识 (保持不变)
+    data class KnowledgeRestore(val r2Commands: List<String>, val summary: String)
+
+    fun loadKnowledge(targetPath: String): KnowledgeRestore {
+        val file = getKnowledgeFile(targetPath)
+        if (!file.exists()) return KnowledgeRestore(emptyList(), "无历史知识库 (新文件)。")
+
+        val commands = mutableListOf<String>()
+        val summaryBuilder = StringBuilder("📚 已从知识库恢复：\n")
+        
+        try {
+            val json = JSONObject(file.readText())
+            
+            if (json.has("renames")) {
+                val renames = json.getJSONObject("renames")
+                var count = 0
+                renames.keys().forEach { addr ->
+                    val name = renames.getString(addr)
+                    commands.add("afn $name $addr")
+                    count++
+                }
+                summaryBuilder.append("- $count 个函数重命名\n")
+            }
+            
+            if (json.has("notes")) {
+                val notes = json.getJSONObject("notes")
+                var count = 0
+                notes.keys().forEach { addr ->
+                    val note = notes.getString(addr)
+                    summaryBuilder.append("- 笔记 @ $addr: $note\n")
+                    count++
+                }
+            }
+            
+        } catch (e: Exception) {
+            return KnowledgeRestore(emptyList(), "读取知识库失败: ${e.message}")
+        }
+        
+        return KnowledgeRestore(commands, summaryBuilder.toString())
     }
 }
