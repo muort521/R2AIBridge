@@ -591,25 +591,24 @@ object MCPServer {
                 listOf("action", "session_id")
             ),
             createToolSchema(
-    "os_list_dir",
-    "📁 [文件列出] 列出目录内容。能力：自动识别并使用 Root 权限。\n" +
-    "技巧：如果不确定 Native 库位置，请先列出 '/data/app/' 目录，找到对应的包名目录（通常包含随机字符），进入后再找 'lib' 目录。",
-    mapOf(
-        "path" to mapOf("type" to "string", "description" to "目录路径")
-    ),
-    listOf("path")
-),
+            "os_list_dir",
+            "📁 [文件目录] 列出目录内容。能力：自动识别并使用 Root 权限。\n" +
+            "技巧：如果不确定 Native 库位置，请先列出 '/data/app/' 目录，找到对应的包名目录（通常包含随机字符），进入后再找 'lib' 目录。",
+             mapOf(
+             "path" to mapOf("type" to "string", "description" to "目录路径")
+             ),
+              listOf("path")
+          ),
             createToolSchema(
-    "r2_open_file",
-    "📄 [读取文件] 读取文件内容。支持 Root。\n" +
-    "路径警告：Android 的库文件通常位于 '/data/app/~~[随机串]/[包名]-[随机串]/lib/arm64/'，而不是 '/data/data'。\n" +
-    "请先使用 os_list_dir('/data/app') 找到正确的安装路径。",
-    mapOf(
-        "file_path" to mapOf("type" to "string", "description" to "文件路径"),
-        "auto_analyze" to mapOf("type" to "boolean", "description" to "是否自动分析", "default" to true)
-    ),
-    listOf("file_path")
-),
+            "os_read_file",
+            "📄 [文本读取] 读取文件的文本内容 (基于 cat)。\n" +
+            "⛔ 警告：严禁读取二进制文件 (如 .so, .db, .apk, .dex, .png)，会导致输出乱码甚至服务崩溃！二进制文件请务必使用 r2_open_file 进行分析。\n" +
+            "特性：自动 Root 提权，自动截断超大文件 (>50KB)，适合读取 xml/json/yaml/conf 等配置文件。",
+                mapOf(
+              "path" to mapOf("type" to "string", "description" to "目标文件的绝对路径")
+               ),
+              listOf("path")
+             ),
             createToolSchema(
                 "termux_command", 
                 "💻 [Shell] 在 Termux 环境中执行系统命令 (Python, Node, Curl, SQLCipher 等)。\n" +
