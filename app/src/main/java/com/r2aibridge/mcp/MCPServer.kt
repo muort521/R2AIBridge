@@ -79,6 +79,21 @@ val availablePrompts = listOf(
             3. 如果你能确定其功能，请立即调用 `rename_function` 将其重命名为更有意义的名字（如 `calc_md5`, `check_license`）。
             4. 如果无法确定，请保留原名并告诉我分析到了什么。
         """.trimIndent()
+    ),
+    R2Prompt(
+        name = "emulate_code",
+        description = "🧪 模拟执行 (Emulate)",
+        promptText = """
+            请帮我模拟执行当前函数片段，以分析其计算逻辑：
+            1. 目标：计算当输入参数 x0=1 时，函数的返回值。
+            2. 操作：调用 `simulate_execution`。
+            3. 参数建议：
+               - session_id: 当前会话 ID
+               - address: 当前 seek 地址
+               - steps: 50 (足够跑完一个小逻辑)
+               - init_regs: "x0=1"
+            4. 分析输出的寄存器状态，告诉我最终 x0 是多少。
+        """.trimIndent()
     )
 )
 
@@ -843,6 +858,17 @@ object MCPServer {
                     "name" to mapOf("type" to "string", "description" to "新的函数名 (只能包含字母、数字、下划线，例如 'AES_Encrypt')")
                 ),
                 listOf("session_id", "name")
+            ),
+            createToolSchema(
+                "simulate_execution",
+                "🧪[模拟执行]在 ESIL 沙箱中模拟执行代码。用于在不运行 App 的情况下计算函数返回值、解密字符串或分析寄存器变化。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "开始模拟的地址 (例如 '0x1234')。留空默认当前位置。"),
+                    "steps" to mapOf("type" to "integer", "description" to "执行的指令步数 (建议 10-100)，防止死循环。"),
+                    "init_regs" to mapOf("type" to "string", "description" to "可选：初始化寄存器状态 (例如 'x0=0x1, x1=0x2000')")
+                ),
+                listOf("session_id", "steps")
             )
         )
         
@@ -1050,6 +1076,58 @@ object MCPServer {
 
                             // 4. 验证结果
                             createToolResult(true, output = "成功将函数重命名为: $safeName\nR2 Output: $r2Result")
+                        }
+                    }
+                }
+                "simulate_execution" -> {
+                    val address = args["address"]?.jsonPrimitive?.content ?: ""
+                    val steps = args["steps"]?.jsonPrimitive?.int ?: 20
+                    val initRegs = args["init_regs"]?.jsonPrimitive?.content ?: ""
+                    val sessionId = args["session_id"]?.jsonPrimitive?.content
+
+                    if (sessionId == null) {
+                        createToolResult(false, error = "Session ID is required.")
+                    } else {
+                        val session = R2SessionManager.getSession(sessionId)
+                        if (session == null) {
+                            createToolResult(false, error = "No active Radare2 session found. Please open a file first.")
+                        } else {
+                            val sb = StringBuilder()
+
+                            // 1. 初始化 ESIL VM
+                            R2Core.executeCommand(session.corePtr, "aei; aeim")
+
+                            // 2. 跳转到起始位置
+                            if (address.isNotBlank()) {
+                                R2Core.executeCommand(session.corePtr, "s $address")
+                            }
+
+                            // 3. 设置寄存器 (如果有)
+                            if (initRegs.isNotBlank()) {
+                                val regs = initRegs.split(",")
+                                for (reg in regs) {
+                                    val cleanReg = reg.trim()
+                                    if (cleanReg.isNotEmpty()) {
+                                        R2Core.executeCommand(session.corePtr, "aer $cleanReg")
+                                        sb.append("Set $cleanReg\n")
+                                    }
+                                }
+                            }
+
+                            // 4. 开始模拟 (Step N times)
+                            sb.append("Executing $steps steps...\n")
+                            R2Core.executeCommand(session.corePtr, "aes $steps")
+
+                            // 5. 获取结果
+                            val regsOutput = R2Core.executeCommand(session.corePtr, "aer")
+                            val currentOp = R2Core.executeCommand(session.corePtr, "pd 1")
+
+                            sb.append("\n--- Final Registers ---\n")
+                            sb.append(regsOutput)
+                            sb.append("\n--- Stopped At ---\n")
+                            sb.append(currentOp)
+
+                            createToolResult(true, output = sb.toString())
                         }
                     }
                 }

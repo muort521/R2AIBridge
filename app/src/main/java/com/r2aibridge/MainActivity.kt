@@ -22,6 +22,8 @@ import androidx.core.content.ContextCompat
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -538,7 +540,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "可用的 MCP 工具 (22个)",
+                        text = "可用的 MCP 工具 (23个)",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -578,34 +580,44 @@ fun MainScreen(
                         "💾 termux_save_script - 保存代码 (赋权/所有者)",
                         "🗄️ sqlite_query - SQL 查询 (读取私有数据库)",
                         "📝 read_logcat - 读取 Android 系统日志 (Logcat)",
-                        "🏷️ rename_function - 智能重命名函数 (语义理解)"
-                        
+                        "🏷️ rename_function - 智能重命名函数 (语义理解)",
+                        "🧪 simulate_execution - 模拟执行 (ESIL 沙箱)"
                     )
                     
-                    tools.forEach { tool ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = ClipData.newPlainText("MCP Tool", tool)
-                                    clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "已复制工具信息", Toast.LENGTH_SHORT).show()
+                    // 添加滚动功能，防止界面溢出
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 300.dp) // 设置最大高度
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Column {
+                            tools.forEach { tool ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable {
+                                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                            val clip = ClipData.newPlainText("MCP Tool", tool)
+                                            clipboard.setPrimaryClip(clip)
+                                            Toast.makeText(context, "已复制工具信息", Toast.LENGTH_SHORT).show()
+                                        }
+                                        .padding(vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "• $tool",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    Text(
+                                        text = "📋",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        modifier = Modifier.padding(start = 8.dp)
+                                    )
                                 }
-                                .padding(vertical = 2.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "• $tool",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.weight(1f)
-                            )
-                            Text(
-                                text = "📋",
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.padding(start = 8.dp)
-                            )
+                            }
                         }
                     }
                 }
