@@ -3,7 +3,7 @@
 #include <android/log.h>
 #include <cstdlib>
 
-#define LOG_TAG "R2AIBridge"
+#define TAG "R2AI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -26,7 +26,7 @@ extern "C" JNIEXPORT jlong JNICALL
 Java_com_r2aibridge_R2Core_initR2Core(JNIEnv* env, jobject /* this */) {
     r_core_t* core = r_core_new();
     if (!core) {
-        LOGE("Failed to create R2 core");
+        LOGE(TAG,"Failed to create R2 core");
         return 0;
     }
 
@@ -35,7 +35,7 @@ Java_com_r2aibridge_R2Core_initR2Core(JNIEnv* env, jobject /* this */) {
     r_core_cmd0(core, "e scr.utf8=0");
     r_core_cmd0(core, "e scr.interactive=false"); // 防止等待输入卡死
 
-    LOGI("R2 Core initialized: %p", core);
+    LOGI(TAG,"R2 Core initialized: %p", core);
     return reinterpret_cast<jlong>(core);
 }
 
@@ -56,7 +56,7 @@ Java_com_r2aibridge_R2Core_executeCommand(
     r_core_t* core = reinterpret_cast<r_core_t*>(corePtr);
     const char* cmd = env->GetStringUTFChars(command, nullptr);
     
-    LOGI("Executing command: %s", cmd);
+    LOGI(TAG,"Executing command: %s", cmd);
 
     // Execute command and get result
     char* result = r_core_cmd_str(core, cmd);
@@ -86,14 +86,14 @@ Java_com_r2aibridge_R2Core_openFile(
         jstring filePath) {
     
     if (corePtr == 0) {
-        LOGE("Invalid core pointer");
+        LOGE(TAG,"Invalid core pointer");
         return JNI_FALSE;
     }
 
     r_core_t* core = reinterpret_cast<r_core_t*>(corePtr);
     const char* path = env->GetStringUTFChars(filePath, nullptr);
     
-    LOGI("Opening file: %s", path);
+    LOGI(TAG,"Opening file: %s", path);
 
     // 先配置 r2
     r_core_cmd0(core, "e io.cache=true");
@@ -113,7 +113,7 @@ Java_com_r2aibridge_R2Core_openFile(
         std::string result_str(result1);
         if (result_str.find("Cannot open") == std::string::npos && 
             result_str.find("ERROR") == std::string::npos) {
-            LOGI("File opened with oo+: %s", result1);
+            LOGI(TAG,"File opened with oo+: %s", result1);
             success = true;
         }
         free(result1);
@@ -129,7 +129,7 @@ Java_com_r2aibridge_R2Core_openFile(
             // 检查是否成功打开（检查文件列表）
             char* files = r_core_cmd_str(core, "o");
             if (files && strlen(files) > 0) {
-                LOGI("File opened with o: %s", files);
+                LOGI(TAG,"File opened with o: %s", files);
                 success = true;
                 free(files);
             }
@@ -140,15 +140,15 @@ Java_com_r2aibridge_R2Core_openFile(
     env->ReleaseStringUTFChars(filePath, path);
 
     if (!success) {
-        LOGE("All methods failed to open file: %s", path);
+        LOGE(TAG,"All methods failed to open file: %s", path);
         // 获取错误信息
         char* error = r_core_cmd_str(core, "o");
         if (error) {
-            LOGE("Current opened files: %s", error);
+            LOGE(TAG,"Current opened files: %s", error);
             free(error);
         }
     } else {
-        LOGI("File opened successfully");
+        LOGI(TAG,"File opened successfully");
     }
 
     return success ? JNI_TRUE : JNI_FALSE;
@@ -168,7 +168,7 @@ Java_com_r2aibridge_R2Core_closeR2Core(
     }
 
     r_core_t* core = reinterpret_cast<r_core_t*>(corePtr);
-    LOGI("Closing R2 core: %p", core);
+    LOGI(TAG,"Closing R2 core: %p", core);
     
     r_core_free(core);
 }
@@ -176,7 +176,7 @@ Java_com_r2aibridge_R2Core_closeR2Core(
 // testR2 函数保留原样，没有变动
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_r2aibridge_R2Core_testR2(JNIEnv* env, jobject /* this */) {
-    LOGI("Testing R2 libraries...");
+    LOGI(TAG,"Testing R2 libraries...");
     std::string result = "R2 Test Results:\n";
     
     r_core_t* core = r_core_new();
@@ -213,6 +213,6 @@ Java_com_r2aibridge_R2Core_testR2(JNIEnv* env, jobject /* this */) {
     r_core_free(core);
     result += "OK: r_core_free() completed\n";
     
-    LOGI("R2 test complete");
+    LOGI(TAG,"R2 test complete");
     return env->NewStringUTF(result.c_str());
 }
