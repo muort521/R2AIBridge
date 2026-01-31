@@ -13,6 +13,10 @@ jobs:
     name: Build & Release APK
     runs-on: ubuntu-latest
 
+    # ✅ 【关键修改】添加写权限，解决 Release Notes 生成失败的问题
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -24,13 +28,8 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
-      # 你的项目使用了 NDK 25.2.9519653，AGP 插件通常会自动下载
-      # 但为了保险和速度，我们也可以显式安装（可选，通常 AGP 会自动处理）
-      
       - name: Restore Keystore file
-        # 关键步骤：还原签名文件
-        # Gradle 配置中写的是 file("../keystore/r2aibridge.jks")
-        # 假设 build.gradle.kts 在 app/ 目录下，这意味着 keystore 目录在项目根目录
+        # 还原签名文件
         run: |
           mkdir -p keystore
           echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore/r2aibridge.jks
@@ -39,14 +38,13 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Release APK
-        # 你的配置中包含 externalNativeBuild (CMake)，这个过程可能会比较耗时
+        # 包含 CMake 编译过程
         run: ./gradlew assembleRelease --stacktrace
 
       - name: Rename APK
         id: rename_apk
         run: |
-          # 找到构建出的 apk (通常在 app/build/outputs/apk/release/)
-          # 重命名以便识别，例如 r2aibridge-v3.0.apk
+          # 找到构建出的 apk 并重命名
           find . -name "*-release.apk" -exec mv {} r2aibridge-release.apk \;
           echo "apk_path=r2aibridge-release.apk" >> $GITHUB_OUTPUT
 
@@ -62,7 +60,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload Artifact (Backup)
-        # 如果不是打标签触发，或者是为了备份，上传到 Actions Artifacts
+        # 备份构建产物到 Actions 页面
         uses: actions/upload-artifact@v4
         with:
           name: r2aibridge-release-apk

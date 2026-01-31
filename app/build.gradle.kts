@@ -12,7 +12,7 @@ android {
     signingConfigs {
     create("release") {
         storeFile = file("../keystore/r2aibridge.jks")
-        storePassword = System.getenv("KEY_STORE_PASSWORD") ?: "android" // 兼容本地硬编码作为默认值
+        storePassword = System.getenv("KEY_STORE_PASSWORD") ?: "android"
         keyAlias = System.getenv("KEY_ALIAS") ?: "r2aibridge"
         keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
     }
