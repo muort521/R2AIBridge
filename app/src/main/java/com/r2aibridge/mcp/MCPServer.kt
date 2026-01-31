@@ -43,14 +43,14 @@ object MCPServer {
          * ⚠️ 关键：如果没有这个，Python/Node 等命令会因为找不到库而报错
          */
         private fun getTermuxEnvSetup(): String {
-            val termuxPrefix = "/data/data/com.termux/files/usr"
-            val termuxHome = "/data/data/com.termux/files/home"
-                 return "export PATH=${termuxPrefix}/bin:$" + "PATH && " +
-                     "export LD_LIBRARY_PATH=${termuxPrefix}/lib && " +
-                     "export HOME=${termuxHome} && " +
-                     "export TMPDIR=/data/local/tmp && " +
-                     "mkdir -p $TERMUX_AI_DIR && " +
-                     "cd $TERMUX_AI_DIR && "
+        val termuxPrefix = "/data/data/com.termux/files/usr"
+        val termuxHome = "/data/data/com.termux/files/home"
+        return "export PATH=${termuxPrefix}/bin:$" + "PATH && " +
+            "export LD_LIBRARY_PATH=${termuxPrefix}/lib && " +
+            "export HOME=${termuxHome} && " +
+            "export TMPDIR=/data/local/tmp && " +
+            "mkdir -p $TERMUX_AI_DIR && " +
+            "cd $TERMUX_AI_DIR && "
         }
 
         /**
