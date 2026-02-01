@@ -630,24 +630,50 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Text(
                 text = "R2AI LOGCAT记录 (${realLogcatHistory.size})",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.weight(1f)
+                style = MaterialTheme.typography.titleMedium
             )
-            IconButton(
-                onClick = {
-                    realLogcatHistory.clear()
-                    Toast.makeText(context, "已清除所有日志", Toast.LENGTH_SHORT).show()
-                },
-                modifier = Modifier.size(24.dp)
+            Row(
+                modifier = Modifier,
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "🗑️",
-                    style = MaterialTheme.typography.bodyLarge
-                )
+                IconButton(
+                    onClick = {
+                        if (realLogcatHistory.isNotEmpty()) {
+                            val allLogs = realLogcatHistory.joinToString("\n")
+                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            val clip = ClipData.newPlainText("R2AI Logs", allLogs)
+                            clipboard.setPrimaryClip(clip)
+                            Toast.makeText(context, "已复制全部日志 (${realLogcatHistory.size}行)", Toast.LENGTH_SHORT).show()
+                        } else {
+                            Toast.makeText(context, "无日志可复制", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Text(
+                        text = "📋",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
+                Spacer(modifier = Modifier.width(16.dp))
+                IconButton(
+                    onClick = {
+                        realLogcatHistory.clear()
+                        Toast.makeText(context, "已清除所有日志", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Text(
+                        text = "🗑️",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                }
             }
         }
         
