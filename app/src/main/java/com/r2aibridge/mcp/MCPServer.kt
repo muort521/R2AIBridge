@@ -324,7 +324,7 @@ object MCPServer {
                     put("version", "1.0")
                     put("status", "running")
                     put("endpoints", JsonArray(listOf(
-                        JsonPrimitive("/messages - Standard MCP endpoint"),
+                        JsonPrimitive("/mcp - Standard MCP endpoint"),
                         JsonPrimitive("/health - Health check")
                     )))
                 }
@@ -336,7 +336,7 @@ object MCPServer {
                 )
             }
 
-            post("/messages") {
+            post("/mcp") {
                 var requestId: JsonElement? = null
                 var method = "unknown"
 

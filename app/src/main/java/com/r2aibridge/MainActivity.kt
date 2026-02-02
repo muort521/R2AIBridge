@@ -353,8 +353,8 @@ fun MainScreen(
     }
     
     val wifiIp = remember(isServiceRunning) { getWifiIpAddress() }
-    val localhostUrl = "http://127.0.0.1:5050/messages"
-    val wifiUrl = if (wifiIp != "未连接WiFi") "http://$wifiIp:5050/messages" else null
+    val localhostUrl = "http://127.0.0.1:5050/mcp"
+    val wifiUrl = if (wifiIp != "未连接WiFi") "http://$wifiIp:5050/mcp" else null
 
     Column(
         modifier = Modifier

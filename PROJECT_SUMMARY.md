@@ -91,7 +91,7 @@
 
 ### 步骤 7: ✅ 构建 MCP 协议处理器
 - Ktor 路由配置:
-  - `POST /messages` - JSON-RPC 2.0 端点
+  - `POST /mcp` - JSON-RPC 2.0 端点
   - `GET /health` - 健康检查
 - 实现 20 个 MCP 工具:
   1. `r2_analyze_file` - 分析文件
@@ -146,7 +146,7 @@ app/build/outputs/apk/debug/app-debug.apk
 2. **授予权限** - 允许存储、网络、通知权限
 3. **启动服务** - 点击"启动服务"按钮
 4. **获取 IP** - 查看通知栏显示的设备 IP
-5. **发送请求** - 通过 HTTP 客户端访问 `http://<IP>:5050/messages`
+5. **发送请求** - 通过 HTTP 客户端访问 `http://<IP>:5050/mcp`
 
 ## 🔧 技术亮点
 

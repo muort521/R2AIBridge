@@ -4,7 +4,7 @@
 
 ## 基础 URL
 ```
-http://<设备IP>:5050/messages
+http://<设备IP>:5050/mcp
 ```
 
 ## 1. 列出所有可用工具
@@ -260,14 +260,14 @@ curl http://192.168.1.100:5050/health
 
 ### 列出工具
 ```bash
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
 ### 分析文件
 ```bash
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",
@@ -282,7 +282,7 @@ curl -X POST http://192.168.1.100:5050/messages \
 
 ### 执行命令
 ```bash
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",
@@ -304,7 +304,7 @@ curl -X POST http://192.168.1.100:5050/messages \
 import requests
 import json
 
-BASE_URL = "http://192.168.1.100:5050/messages"
+BASE_URL = "http://192.168.1.100:5050/mcp"
 
 def send_mcp_request(method, params=None):
     payload = {

@@ -65,7 +65,7 @@
 - [ ] **HTTP 服务器**
   - 能绑定到 0.0.0.0:5050
   - `/health` 端点返回正确
-  - `/messages` 端点处理 JSON-RPC 2.0 请求
+  - `/mcp` 端点处理 JSON-RPC 2.0 请求
 
 - [ ] **MCP 协议**
   - `tools/list` 返回完整工具列表

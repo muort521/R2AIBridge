@@ -56,14 +56,14 @@ Android Studio 会自动提示同步，或手动点击 "Sync Project with Gradle
 curl http://192.168.1.100:5050/health
 
 # 列出工具
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 
 # 分析文件 (先将测试文件放到设备)
 adb push test_binary /sdcard/Download/test_binary
 
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",

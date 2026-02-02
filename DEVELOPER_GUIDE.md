@@ -380,7 +380,7 @@ install(Compression) {
 private const val API_TOKEN = "your-secret-token"
 
 app.routing {
-    post("/messages") {
+    post("/mcp") {
         val token = call.request.headers["Authorization"]
         if (token != "Bearer $API_TOKEN") {
             call.respond(HttpStatusCode.Unauthorized)

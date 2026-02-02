@@ -221,7 +221,7 @@ app/
 
 ## API 端点
 
-### POST /messages
+### POST /mcp
 MCP JSON-RPC 2.0 端点
 
 **请求示例 - 列出工具:**
@@ -325,7 +325,7 @@ app/src/main/jniLibs/arm64-v8a/
 ### 4. 连接服务
 从同一网络的设备访问：
 ```
-http://<设备IP>:5050/messages
+http://<设备IP>:5050/mcp
 ```
 
 ### 5. 发送 MCP 请求
@@ -334,12 +334,12 @@ http://<设备IP>:5050/messages
 **示例 (使用 curl):**
 ```bash
 # 列出所有工具
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 
 # 分析文件
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",
@@ -352,7 +352,7 @@ curl -X POST http://192.168.1.100:5050/messages \
   }'
 
 # 执行命令
-curl -X POST http://192.168.1.100:5050/messages \
+curl -X POST http://192.168.1.100:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc":"2.0",

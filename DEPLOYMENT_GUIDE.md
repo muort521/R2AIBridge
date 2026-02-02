@@ -57,7 +57,7 @@ sys/android-build.sh
 
 或使用 HTTP endpoint：
 ```
-POST http://192.168.2.22:5050/messages
+POST http://192.168.2.22:5050/mcp
 ```
 
 ---
@@ -135,7 +135,7 @@ POST http://192.168.2.22:5050/messages
 
 #### 1. Initialize（初始化）
 ```bash
-curl -X POST http://192.168.2.22:5050/messages \
+curl -X POST http://192.168.2.22:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -147,7 +147,7 @@ curl -X POST http://192.168.2.22:5050/messages \
 
 #### 2. Tools List（获取工具列表）
 ```bash
-curl -X POST http://192.168.2.22:5050/messages \
+curl -X POST http://192.168.2.22:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -159,7 +159,7 @@ curl -X POST http://192.168.2.22:5050/messages \
 #### 3. Tools Call（调用工具）
 ```bash
 # 分析文件
-curl -X POST http://192.168.2.22:5050/messages \
+curl -X POST http://192.168.2.22:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
@@ -174,7 +174,7 @@ curl -X POST http://192.168.2.22:5050/messages \
   }'
 
 # 列出函数
-curl -X POST http://192.168.2.22:5050/messages \
+curl -X POST http://192.168.2.22:5050/mcp \
   -H "Content-Type: application/json" \
   -d '{
     "jsonrpc": "2.0",
