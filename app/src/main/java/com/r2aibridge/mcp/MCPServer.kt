@@ -95,7 +95,34 @@ val availablePrompts = listOf(
                - init_regs: "x0=1"
             4. 分析输出的寄存器状态，告诉我最终 x0 是多少。
         """.trimIndent()
+    ),
+    R2Prompt(
+        name = "decrypt_strings_auto",
+        description = "🔐 自动化解密混淆字符串 (Auto Decrypt Strings)",
+        promptText = """
+            请协助我针对当前目标函数执行批量字符串解密。这是一个针对 OLLVM 混淆或自定义加密函数的自动化流程。
+
+            请严格按照以下步骤操作：
+            1. **环境侦察**：
+               - 运行 `i` 检查当前架构 (ARM64/ARM32/x86)。
+               - 运行 `pdf` 阅读目标函数的汇编代码。
+            
+            2. **参数推断 (至关重要)**：
+               - **指令宽度 (`instr_size`)**：ARM64填4；ARM32填4(Thumb填2)；x86请填平均值(如3)或精确计算。
+               - **结果寄存器 (`result_reg`)**：解密后的字符串指针放在哪里？(ARM通常是 `x0`/`r0`，x86通常是 `eax`/`rax`)。
+               - **传参方式**：
+                 - 如果是寄存器传参 (ARM)，直接进行下一步。
+                 - 如果是栈传参 (x86 `push`)，请构造 `custom_init` 指令来模拟栈数据 (例如 `wv 0x1000 @ esp+4`)。
+            
+            3. **执行模拟**：
+               - 调用 `batch_decrypt_strings` 工具。
+               - 填入你分析出的 `result_reg`, `instr_size` 和 `custom_init`。
+               - 如果函数引用了 `.rodata` 大表，请适当增大 `map_size` (如 `0x100000`)。
+
+            执行完成后，请为我列出解密成功的字符串清单。
+        """.trimIndent()
     )
+
 )
 
 object MCPServer {
