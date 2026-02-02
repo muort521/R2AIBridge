@@ -540,7 +540,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "可用的 MCP 工具 (24个)",
+                        text = "可用的 MCP 工具 (25个)",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -582,7 +582,8 @@ fun MainScreen(
                         "📝 read_logcat - 读取 Android 系统日志 (Logcat)",
                         "🏷️ rename_function - 智能重命名函数 (语义理解)",
                         "🧪 simulate_execution - 模拟执行 (ESIL 沙箱)",
-                        "📝 add_knowledge_note - 持久化知识库 (记录重要发现)"
+                        "📝 add_knowledge_note - 持久化知识库 (记录重要发现)",
+                        "🔐 batch_decrypt_strings - 批量解密字符串对抗混淆"
                     )
                     
                     // 添加滚动功能，防止界面溢出

@@ -588,6 +588,7 @@ object MCPServer {
 
     private fun handlePing(): JsonElement {
         logInfo("收到 ping 请求")
+        
         return buildJsonObject {
             put("message", "pong")
             put("timestamp", System.currentTimeMillis())
@@ -882,6 +883,32 @@ object MCPServer {
                     "note" to mapOf("type" to "string", "description" to "笔记内容 (例如 'AES Key 生成函数，返回值是 Key')")
                 ),
                 listOf("address", "note")
+            ),
+            createToolSchema(
+                "batch_decrypt_strings",
+                "🔐 [批量解密] 批量解密字符串，批量模拟执行并提取结果。专为对抗混淆 (OLLVM) 和自定义算法设计。\n" +
+                "核心能力：\n" +
+                "1. 自动定位函数引用点，批量回溯模拟。\n" +
+                "2. 支持所有架构：通过 `instr_size` 和 `result_reg` 适配 ARM64/ARM32/x86。\n" +
+                "3. 解决栈传参：通过 `custom_init` 注入指令 (如 'wv 0x10 @ 0x178004') 手动修补堆栈。\n" +
+                "4. 解决内存布局：通过 `map_size` 扩大内存映射范围。\n" +
+                "注意：仅适用于纯算法函数，无法模拟 malloc/JNI 等外部系统调用。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "func_address" to mapOf("type" to "string", "description" to "目标解密函数的地址 (例如 '0x401000')"),
+                    
+                    // 👇 关键的新增参数
+                    "result_reg" to mapOf("type" to "string", "description" to "存放结果字符串指针的寄存器。ARM64通常是'x0', ARM32是'r0', x86是'eax'。默认为 'x0'。", "default" to "x0"),
+                    
+                    "instr_size" to mapOf("type" to "integer", "description" to "指令平均字节数。用于计算回溯地址。ARM64=4, ARM32=4(或2), x86=变长(可填平均值3)。默认为 4。", "default" to 4),
+                    
+                    "pre_steps" to mapOf("type" to "integer", "description" to "向前回溯的指令条数，用于让 CPU 执行参数准备逻辑。默认为 30。", "default" to 30),
+                    
+                    "map_size" to mapOf("type" to "string", "description" to "模拟器内存映射大小。如果算法引用了远处的数据段，请调大此值。默认为 '0x40000' (256KB)。", "default" to "0x40000"),
+                    
+                    "custom_init" to mapOf("type" to "string", "description" to "【高级插槽】在模拟启动前执行的 R2 命令序列。用于手动初始化栈参数或全局变量。\n示例 (x86栈传参): 'wv 0x1234 @ esp+4; wv 0x5678 @ esp+8'\n示例 (填充全局变量): 'wx 0xff @ 0x80040'", "default" to "")
+                ),
+                listOf("session_id", "func_address")
             )
         )
         
@@ -1172,6 +1199,110 @@ object MCPServer {
                             createToolResult(true, output = sb.toString())
                         }
                     }
+                }
+                "batch_decrypt_strings" -> {
+                    // --- 1. 参数提取与校验 ---
+                    val sessionId = args["session_id"]?.jsonPrimitive?.content
+                        ?: return createToolResult(false, error = "Missing session_id")
+                    val funcAddr = args["func_address"]?.jsonPrimitive?.content
+                        ?: return createToolResult(false, error = "Missing func_address")
+                    
+                    // 默认值配置
+                    val resultReg = args["result_reg"]?.jsonPrimitive?.content ?: "x0"
+                    val instrSize = args["instr_size"]?.jsonPrimitive?.int ?: 4
+                    val maxSteps = 2000
+                    val preSteps = args["pre_steps"]?.jsonPrimitive?.int ?: 30
+                    val mapSize = args["map_size"]?.jsonPrimitive?.content ?: "0x40000"
+                    val customInit = args["custom_init"]?.jsonPrimitive?.content ?: ""
+
+                    val session = R2SessionManager.getSession(sessionId)
+                        ?: return createToolResult(false, error = "Invalid session_id")
+
+                    val sb = StringBuilder("🚀 启动全架构通用模拟: $funcAddr\n")
+
+                    // --- 2. 查找交叉引用 (Xrefs) ---
+                    val xrefsJson = R2Core.executeCommand(session.corePtr, "axtj $funcAddr")
+                    val callSites = mutableListOf<Long>()
+                    try {
+                        val jsonArr = org.json.JSONArray(xrefsJson)
+                        for (i in 0 until jsonArr.length()) {
+                            val item = jsonArr.getJSONObject(i)
+                            if (item.optString("type").lowercase().contains("call")) {
+                                callSites.add(item.getLong("from"))
+                            }
+                        }
+                    } catch (e: Exception) { }
+
+                    if (callSites.isEmpty()) return createToolResult(true, output = "⚠️ 未发现调用点。请检查地址是否正确。")
+
+                    sb.append("🔍 发现 ${callSites.size} 处调用，准备模拟...\n")
+                    var successCount = 0
+
+                    // --- 3. 批量模拟循环 ---
+                    for (callSite in callSites) {
+                        val callSiteHex = "0x%x".format(callSite)
+                        // 计算回溯起点
+                        val startPC = callSite - (preSteps * instrSize)
+
+                        // A. 重置映射 & 动态分配内存
+                        R2Core.executeCommand(session.corePtr, "om -") // 清空
+                        R2Core.executeCommand(session.corePtr, "omf 0 $mapSize") // 动态大小映射
+                        
+                        // B. 计算安全的栈顶地址 (Stack Pointer)
+                        // 逻辑：栈顶 = 映射大小 - 0x100 (保留一点 buffer 防止溢出)
+                        val mapSizeBytes = try {
+                            if (mapSize.startsWith("0x")) mapSize.substring(2).toLong(16)
+                            else mapSize.toLong()
+                        } catch (e: Exception) { 0x40000L }
+                        
+                        val safeStackAddr = mapSizeBytes - 0x100
+                        val safeStackHex = "0x%x".format(safeStackAddr)
+
+                        // C. 初始化 ESIL 虚拟机
+                        R2Core.executeCommand(session.corePtr, "e esil.romem=true")
+                        R2Core.executeCommand(session.corePtr, "aei; aeim")
+                        
+                        // D. 初始化通用寄存器 (覆盖 ARM64, ARM32, x86, x64)
+                        // 将 SP/BP 都指向我们计算出的安全内存高位，防止 push/pop 崩溃
+                        val initStackCmd = "aer x29=$safeStackHex; aer sp=$safeStackHex; " +
+                                           "aer rbp=$safeStackHex; aer esp=$safeStackHex; " +
+                                           "aer r7=$safeStackHex" // ARM32 Thumb Frame Pointer
+                        R2Core.executeCommand(session.corePtr, initStackCmd)
+
+                        // E. 【高阶】执行 AI 自定义的特殊初始化 (例如写栈参数)
+                        if (customInit.isNotBlank()) {
+                            R2Core.executeCommand(session.corePtr, customInit)
+                        }
+
+                        // F. 执行参数准备阶段 (Pre-run)
+                        R2Core.executeCommand(session.corePtr, "aer pc=$startPC")
+                        R2Core.executeCommand(session.corePtr, "aecu $callSite")
+                        
+                        // G. 跳过 Call 指令本身，模拟函数内部
+                        // 设置 LR/Ret 地址为 0xffffff (陷阱)，模拟函数执行完返回
+                        R2Core.executeCommand(session.corePtr, "aer lr=0xffffff; aer rax=0xffffff")
+                        R2Core.executeCommand(session.corePtr, "aer pc=$funcAddr")
+                        
+                        // H. 正式模拟 (Run)
+                        R2Core.executeCommand(session.corePtr, "aes $maxSteps")
+
+                        // I. 提取结果 (通用寄存器)
+                        val retValStr = R2Core.executeCommand(session.corePtr, "aer $resultReg").trim()
+                        val resultString = R2Core.executeCommand(session.corePtr, "ps @ $retValStr").trim()
+
+                        // J. 结果验证与保存
+                        if (resultString.isNotBlank() && resultString.length > 1 && resultString.all { it.code in 32..126 }) {
+                            sb.append("✅ $callSiteHex -> \"$resultString\"\n")
+                            if (currentFilePath.isNotBlank()) {
+                                saveKnowledge(currentFilePath, "notes", callSiteHex, "Decrypted: \"$resultString\"")
+                                R2Core.executeCommand(session.corePtr, "CC Decrypted: \"$resultString\" @ $callSite")
+                            }
+                            successCount++
+                        }
+                    }
+                    
+                    sb.append("\n📊 统计: 成功 $successCount / ${callSites.size}\n")
+                    createToolResult(true, output = sb.toString())
                 }
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
             }
