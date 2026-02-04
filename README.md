@@ -1,7 +1,5 @@
 # Radare2 AI Bridge Android App
 
-> ✅ **构建状态**: 成功 | **APK**: `app/build/outputs/apk/debug/app-debug.apk`
-
 将 Radare2 逆向引擎集成到 Android App，通过前台服务运行 Ktor HTTP 服务器，暴露 20 个核心 MCP 工具。
 
 ## 🎯 核心特性
