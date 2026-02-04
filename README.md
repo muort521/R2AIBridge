@@ -51,10 +51,10 @@ app/
 
 ## MCP 工具列表
 
-服务器在 `0.0.0.0:5050` 端点暴露以下 20 个 MCP 工具：
+服务器在 `0.0.0.0:5050` 端点暴露以下 28 个 MCP 工具：
 
 ### 1. r2_open_file
-打开二进制文件并执行基础分析。
+打开文件并执行基础分析 (默认 a 基础分析)。
 
 **参数:**
 - `file_path` (string) - 要分析的文件路径
@@ -64,7 +64,7 @@ app/
 - 会话 ID 和文件基本信息
 
 ### 2. r2_analyze_file
-执行深度分析 (aaa) 并自动释放资源。
+执行深度分析 (aaa, 耗时较长)。
 
 **参数:**
 - `file_path` (string) - 要分析的文件路径
@@ -73,7 +73,7 @@ app/
 - 分析结果和文件信息
 
 ### 3. r2_analyze_target
-执行特定的 Radare2 递归分析策略。智能选择分析策略，避免盲目使用全量分析。
+智能分析策略 (精准下刀)。
 
 **策略说明:**
 - `basic` (aa): 基础分析，识别符号和入口点
@@ -91,7 +91,7 @@ app/
 - 分析结果和状态反馈
 
 ### 4. r2_run_command
-执行任意 Radare2 命令。
+执行 R2 命令 (通用)。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -100,8 +100,30 @@ app/
 **返回:**
 - 命令执行结果
 
-### 4. r2_list_functions
-列出二进制文件中的已识别函数。
+### 5. r2_config_manager
+配置管理 (动态调整分析参数)。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `configs` (object) - 配置参数键值对
+
+**返回:**
+- 配置更新结果
+
+### 6. r2_analysis_hints
+分析提示 (手动修正分析错误)。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `hint_type` (string) - 提示类型
+- `address` (string) - 目标地址
+- `data` (string, optional) - 提示数据
+
+**返回:**
+- 提示应用结果
+
+### 7. r2_list_functions
+列出函数列表。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -111,8 +133,8 @@ app/
 **返回:**
 - 函数列表
 
-### 5. r2_list_strings
-列出二进制文件中的字符串。
+### 8. r2_list_strings
+列出字符串 (逆向第一步)。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -122,8 +144,8 @@ app/
 **返回:**
 - 字符串列表
 
-### 6. r2_get_xrefs
-获取指定地址/函数的交叉引用。
+### 9. r2_get_xrefs
+获取交叉引用 (逻辑追踪)。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -134,8 +156,20 @@ app/
 **返回:**
 - 交叉引用列表
 
-### 7. r2_get_info
-获取二进制文件的详细信息。
+### 10. r2_manage_xrefs
+管理交叉引用 (手动修复)。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `action` (string) - 操作类型 ('add' 或 'remove')
+- `from` (string) - 源地址
+- `to` (string) - 目标地址
+
+**返回:**
+- 操作结果
+
+### 11. r2_get_info
+获取文件详细信息。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -144,8 +178,8 @@ app/
 **返回:**
 - 文件信息
 
-### 8. r2_decompile_function
-反编译指定地址的函数为伪代码。
+### 12. r2_decompile_function
+反编译函数。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -154,8 +188,8 @@ app/
 **返回:**
 - 反编译代码
 
-### 9. r2_disassemble
-反汇编指定地址的代码。
+### 13. r2_disassemble
+反汇编代码。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -165,8 +199,8 @@ app/
 **返回:**
 - 反汇编输出
 
-### 10. r2_test
-测试 Radare2 库是否正常工作。
+### 14. r2_test
+测试 R2 库状态 (诊断)。
 
 **参数:**
 - 无
@@ -174,8 +208,8 @@ app/
 **返回:**
 - 测试结果
 
-### 11. r2_close_session
-关闭 Radare2 会话，释放资源。
+### 15. r2_close_session
+关闭会话。
 
 **参数:**
 - `session_id` (string) - 会话 ID
@@ -183,8 +217,8 @@ app/
 **返回:**
 - 关闭确认
 
-### 12. os_list_dir
-列出指定文件夹下的内容，支持 Root 权限访问受保护目录。
+### 16. os_list_dir
+列出目录内容 (支持 Root)。
 
 **参数:**
 - `path` (string) - 目标文件夹的绝对路径
@@ -192,8 +226,8 @@ app/
 **返回:**
 - 目录内容列表，包含文件类型和大小
 
-### 13. os_read_file
-读取指定文件的文本内容，支持 Root 权限和大文件截断保护。
+### 17. os_read_file
+读取文件内容 (支持 Root)。
 
 **参数:**
 - `path` (string) - 目标文件的绝对路径
@@ -201,23 +235,117 @@ app/
 **返回:**
 - 文件内容（自动截断大文件以防 OOM）
 
-### 14. r2_analyze_target
-执行特定的 Radare2 递归分析策略。智能选择分析策略，避免盲目使用全量分析。
-
-**策略说明:**
-- `basic` (aa): 基础分析，识别符号和入口点
-- `blocks` (aab): 分析基本块结构，修复函数截断问题
-- `calls` (aac): 递归分析函数调用，发现未识别的子函数
-- `refs` (aar): 分析数据引用，识别字符串引用和全局变量
-- `pointers` (aad): 分析数据段指针，用于C++虚表和跳转表恢复
-- `full` (aaa): 全量深度分析（耗时极长，仅在小文件或必要时使用）
+### 18. termux_command
+Termux 环境命令 (AI 沙盒)。
 
 **参数:**
-- `strategy` (string) - 分析策略模式
-- `address` (string, optional) - 指定分析的起始地址或符号
+- `command` (string) - 要执行的命令
 
 **返回:**
-- 分析结果和状态反馈
+- 命令执行结果
+
+### 19. termux_save_script
+保存代码 (赋权/所有者)。
+
+**参数:**
+- `script` (string) - 脚本内容
+- `path` (string) - 保存路径
+
+**返回:**
+- 保存结果
+
+### 20. sqlite_query
+SQL 查询 (读取私有数据库)。
+
+**参数:**
+- `db_path` (string) - 数据库文件路径
+- `query` (string) - SQL 查询语句
+
+**返回:**
+- 查询结果
+
+### 21. read_logcat
+读取 Android 系统日志 (Logcat)。
+
+**参数:**
+- `filter` (string, optional) - 日志过滤器
+- `lines` (integer, optional) - 读取行数 (默认 100)
+
+**返回:**
+- 日志内容
+
+### 22. rename_function
+智能重命名函数 (语义理解)。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `address` (string) - 函数地址
+- `new_name` (string) - 新函数名
+
+**返回:**
+- 重命名结果
+
+### 23. simulate_execution
+模拟执行 (ESIL 沙盒)。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `address` (string) - 起始地址
+- `steps` (integer, optional) - 执行步数 (默认 100)
+
+**返回:**
+- 执行结果和状态
+
+### 24. add_knowledge_note
+持久化知识库 (记录重要发现)。
+
+**参数:**
+- `note` (string) - 知识库笔记内容
+- `category` (string, optional) - 分类标签
+
+**返回:**
+- 保存结果
+
+### 25. batch_decrypt_strings
+批量解密字符串对抗混淆。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `method` (string) - 解密方法
+- `params` (object, optional) - 解密参数
+
+**返回:**
+- 解密结果
+
+### 26. scan_crypto_signatures
+扫描加密签名识别算法。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `address` (string, optional) - 扫描起始地址
+
+**返回:**
+- 加密算法识别结果
+
+### 27. apply_hex_patch
+对指定地址应用二进制 Patch。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+- `address` (string) - 目标地址
+- `patch` (string) - 十六进制补丁数据
+
+**返回:**
+- 补丁应用结果
+
+### 28. find_jni_methods
+列出所有的 JNI 接口函数。
+
+**参数:**
+- `session_id` (string) - 会话 ID
+
+**返回:**
+- JNI 方法列表
 
 ## API 端点
 
