@@ -540,7 +540,7 @@ fun MainScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(
-                        text = "可用的 MCP 工具 (25个)",
+                        text = "可用的 MCP 工具 (28个)",
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.weight(1f)
                     )
@@ -583,7 +583,10 @@ fun MainScreen(
                         "🏷️ rename_function - 智能重命名函数 (语义理解)",
                         "🧪 simulate_execution - 模拟执行 (ESIL 沙箱)",
                         "📝 add_knowledge_note - 持久化知识库 (记录重要发现)",
-                        "🔐 batch_decrypt_strings - 批量解密字符串对抗混淆"
+                        "🔐 batch_decrypt_strings - 批量解密字符串对抗混淆",
+                        "🔍 scan_crypto_signatures - 扫描加密签名识别算法",
+                        "🔨 apply_hex_patch - 对指定地址应用二进制 Patch",
+                        "🔍 find_jni_methods - 列出所有的 JNI 接口函数"
                     )
                     
                     // 添加滚动功能，防止界面溢出

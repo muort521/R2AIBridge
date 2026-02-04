@@ -936,6 +936,38 @@ object MCPServer {
                     "custom_init" to mapOf("type" to "string", "description" to "【高级插槽】在模拟启动前执行的 R2 命令序列。用于手动初始化栈参数或全局变量。\n示例 (x86栈传参): 'wv 0x1234 @ esp+4; wv 0x5678 @ esp+8'\n示例 (填充全局变量): 'wx 0xff @ 0x80040'", "default" to "")
                 ),
                 listOf("session_id", "func_address")
+            ),
+            createToolSchema(
+                "scan_crypto_signatures",
+                "🔍 [侦察] 扫描二进制文件中的密码学常量（Magic Numbers）。\n" +
+                "用于快速定位加密算法的位置。例如：自动发现 AES S-Box, RSA Keys, MD5/SHA 常量等。\n" +
+                "建议在分析未知的加密函数前先运行此工具。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("session_id")
+            ),
+            createToolSchema(
+                "apply_hex_patch",
+                "🔨 [修改指令] 对指定地址应用二进制 Patch (修改指令)。\n" +
+                "用于绕过校验、修改返回值等。例如：将 '1a000034' (CBZ) 修改为 '1f2003d5' (NOP)。\n" +
+                "⚠️ 警告：此操作会直接修改内存/文件。如果不确定，请先使用模拟执行测试。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID"),
+                    "address" to mapOf("type" to "string", "description" to "Patch 的起始地址 (例如 '0x00401a00')"),
+                    "hex_bytes" to mapOf("type" to "string", "description" to "要写入的十六进制机器码 (例如 '1f2003d5')。不需要空格。")
+                ),
+                listOf("session_id", "address", "hex_bytes")
+            ),
+            createToolSchema(
+                "find_jni_methods",
+                "🔗 [JNI] 列出所有的 JNI 接口函数。\n" +
+                "这是 Android 逆向的入口点。它会搜索静态导出的 'Java_' 符号以及 'JNI_OnLoad' 函数。\n" +
+                "找到这些函数后，你通常应该从这里开始分析。",
+                mapOf(
+                    "session_id" to mapOf("type" to "string", "description" to "会话 ID")
+                ),
+                listOf("session_id")
             )
         )
         
@@ -1329,6 +1361,83 @@ object MCPServer {
                     }
                     
                     sb.append("\n📊 统计: 成功 $successCount / ${callSites.size}\n")
+                    createToolResult(true, output = sb.toString())
+                }
+                "scan_crypto_signatures" -> {
+                    val sessionId = args["session_id"]?.jsonPrimitive?.content
+                        ?: return createToolResult(false, error = "Missing session_id")
+                    val session = R2SessionManager.getSession(sessionId)
+                        ?: return createToolResult(false, error = "Invalid session_id")
+
+                    logInfo("正在扫描密码学特征...")
+                    
+                    // /ca = Search for crypto constants (AES, RSA, SHA...) in all sections
+                    // search.in=io.maps 确保扫描所有映射的内存
+                    R2Core.executeCommand(session.corePtr, "e search.in=io.maps")
+                    val rawOutput = R2Core.executeCommand(session.corePtr, "/ca")
+                    
+                    if (rawOutput.isBlank()) {
+                        createToolResult(true, output = "未发现明显的密码学常量特征。")
+                    } else {
+                        // 简单的格式化，去掉太长的杂音
+                        val formatted = rawOutput.lineSequence()
+                            .take(50) // 只取前50个，防止太多
+                            .joinToString("\n")
+                        createToolResult(true, output = "🔍 发现以下密码学特征:\n$formatted\n\n💡 提示：请根据地址跳转分析引用 (axt)。")
+                    }
+                }
+                "apply_hex_patch" -> {
+                    val sessionId = args["session_id"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "Missing session_id")
+                    val address = args["address"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "Missing address")
+                    val hexBytes = args["hex_bytes"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "Missing bytes")
+
+                    val session = R2SessionManager.getSession(sessionId) ?: return createToolResult(false, error = "Invalid session_id")
+
+                    // 1. 尝试开启写模式 (oo+)
+                    R2Core.executeCommand(session.corePtr, "oo+")
+                    
+                    // 2. 备份原有字节 (为了显示给用户看)
+                    val len = hexBytes.length / 2
+                    val originalBytes = R2Core.executeCommand(session.corePtr, "p8 $len @ $address").trim()
+                    
+                    // 3. 写入新字节
+                    // wx = Write heX
+                    R2Core.executeCommand(session.corePtr, "wx $hexBytes @ $address")
+                    
+                    // 4. 验证是否写入成功
+                    val newBytes = R2Core.executeCommand(session.corePtr, "p8 $len @ $address").trim()
+                    
+                    // 5. 刷新反汇编预览
+                    val preview = R2Core.executeCommand(session.corePtr, "pd 1 @ $address")
+
+                    if (newBytes.equals(hexBytes, ignoreCase = true)) {
+                        createToolResult(true, output = "✅ Patch 成功！\n📍 地址: $address\n🔴 原字节: $originalBytes\n🟢 新字节: $newBytes\n\n🔍 当前指令预览:\n$preview")
+                    } else {
+                        createToolResult(false, error = "❌ Patch 失败。可能没有写权限，或者文件只读。\n当前字节仍为: $newBytes")
+                    }
+                }
+                "find_jni_methods" -> {
+                    val sessionId = args["session_id"]?.jsonPrimitive?.content ?: return createToolResult(false, error = "Missing session_id")
+                    val session = R2SessionManager.getSession(sessionId) ?: return createToolResult(false, error = "Invalid session_id")
+
+                    // is~Java_ : 列出符号(symbols)中包含 "Java_" 的 
+                    // is~JNI_OnLoad : 列出 JNI_OnLoad 
+                    val javaFuncs = R2Core.executeCommand(session.corePtr, "is~Java_").trim()
+                    val onLoad = R2Core.executeCommand(session.corePtr, "is~JNI_OnLoad").trim()
+                    
+                    val sb = StringBuilder() 
+                    if (onLoad.isNotBlank()) {
+                        sb.append("⚡ 发现动态注册入口 (JNI_OnLoad):\n$onLoad\n\n")
+                    } else {
+                        sb.append("ℹ️ 未发现 JNI_OnLoad (可能是静态注册或被混淆)\n\n")
+                    }
+                    
+                    if (javaFuncs.isNotBlank()) {
+                        sb.append("☕ 发现静态 JNI 函数:\n$javaFuncs")
+                    } else {
+                        sb.append("⚠️ 未发现静态导出的 'Java_' 函数。请检查是否被 Strip 或使用了动态注册。")
+                    }
+                    
                     createToolResult(true, output = sb.toString())
                 }
                 else -> createToolResult(false, error = "Unknown tool: $toolName")
