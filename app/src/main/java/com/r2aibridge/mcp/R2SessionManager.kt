@@ -67,9 +67,16 @@ object R2SessionManager {
     }
     
     /**
-     * 获取所有会话
+     * 获取所有会话 (返回列表)
      */
-    fun getAllSessions(): List<R2Session> {
+    fun getAllSessions(): Map<String, R2Session> {
+        return sessions
+    }
+    
+    /**
+     * 获取所有会话 (返回列表)
+     */
+    fun getAllSessionsList(): List<R2Session> {
         return sessions.values.toList()
     }
     
@@ -141,7 +148,7 @@ object R2SessionManager {
      */
     fun getStats(): Map<String, Any> {
         val now = System.currentTimeMillis()
-        val sessions = getAllSessions()
+        val sessions = getAllSessionsList()
         
         return mapOf(
             "total" to sessions.size,

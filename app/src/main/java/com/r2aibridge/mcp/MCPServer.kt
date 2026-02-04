@@ -529,6 +529,94 @@ object MCPServer {
                                 return@post
                             }
                         }
+                        "resources/list" -> {
+                            val resources = JsonArray(listOf(
+                                // 1. 文件基础信息
+                                buildJsonObject {
+                                    put("uri", "r2://target-info")
+                                    put("name", "ℹ️ 目标文件情报 (Binary Info)")
+                                    put("description", "二进制文件的基本信息：架构(Arch)、位宽(Bits)、文件类型、编译器信息等。基于 r2 'i' 命令。")
+                                    put("mimeType", "text/plain")
+                                },
+                                // 2. 导入表 (关键依赖)
+                                buildJsonObject {
+                                    put("uri", "r2://imports")
+                                    put("name", "📦 导入函数列表 (Imports)")
+                                    put("description", "目标文件调用的外部函数列表 (libc, JNI, OpenSSL 等)。用于快速判断程序功能。")
+                                    put("mimeType", "text/plain")
+                                },
+                                // 3. 设备环境信息
+                                buildJsonObject {
+                                    put("uri", "r2://device-env")
+                                    put("name", "🖥️ 设备环境信息 (Device Environment)")
+                                    put("description", "当前设备的系统版本、架构、Root 状态等环境信息。不依赖 R2 会话，可随时读取。")
+                                    put("mimeType", "text/plain")
+                                }
+                            ))
+                            
+                            buildJsonObject { put("resources", resources) }
+                        }
+                        
+                        "resources/templates/list" -> {
+                             buildJsonObject { put("resourceTemplates", JsonArray(emptyList())) }
+                        }
+                        
+                        "resources/read" -> {
+                            val uri = request.params?.get("uri")?.jsonPrimitive?.content ?: ""
+                            Log.i(TAG, "📖 读取资源: $uri")
+
+                            // 尝试获取会话，但如果为 null 也不要立即报错
+                            val session = R2SessionManager.getAllSessions().values.lastOrNull()
+
+                            val content = when (uri) {
+                                // case 1: 设备环境 (完全不依赖 session)
+                                "r2://device-env" -> {
+                                    val prop = ShellUtils.execCommand("getprop ro.build.version.release", false).successMsg
+                                    val arch = System.getProperty("os.arch") ?: "unknown"
+                                    val isRoot = ShellUtils.execCommand("id", true).successMsg.contains("uid=0")
+                                    """
+                                    OS: Android $prop
+                                    Arch: $arch
+                                    Rooted: $isRoot
+                                    Termux Dir: $TERMUX_AI_DIR
+                                    """.trimIndent()
+                                }
+
+                                // case 3: 目标信息 (强依赖 session)
+                                "r2://target-info" -> {
+                                    if (session != null) {
+                                        val basicInfo = R2Core.executeCommand(session.corePtr, "i")
+                                        val sections = R2Core.executeCommand(session.corePtr, "iSq")
+                                        "=== Basic Info ===\n$basicInfo\n=== Sections ===\n$sections"
+                                    } else {
+                                        "❌ 错误: 无活动 R2 会话。无法执行 'i' 命令。"
+                                    }
+                                }
+
+                                // case 4: 导入表 (强依赖 session)
+                                "r2://imports" -> {
+                                    if (session != null) {
+                                        val rawImports = R2Core.executeCommand(session.corePtr, "ii")
+                                        sanitizeOutput(rawImports, maxLines = 100)
+                                    } else {
+                                        "❌ 错误: 无活动 R2 会话。无法执行 'ii' 命令。"
+                                    }
+                                }
+
+                                else -> "❌ 未知资源 URI: $uri"
+                            }
+
+                            // 构造响应
+                            buildJsonObject {
+                                put("contents", JsonArray(listOf(
+                                    buildJsonObject {
+                                        put("uri", uri)
+                                        put("mimeType", "text/plain")
+                                        put("text", content)
+                                    }
+                                )))
+                            }
+                        }
                         else -> {
                             logError("未知方法", method)
                             val errorObj = buildJsonObject {
