@@ -646,7 +646,7 @@ object MCPServer {
         val tools = listOf(
             createToolSchema(
                 "r2_open_file",
-                "🚪 [会话管理] 打开二进制文件。默认执行基础分析 (aa) 以快速识别函数。注意：对于大型文件 (>10MB)，强烈建议将 auto_analyze 设为 false 以免超时。如需深度分析，可后续调用 r2_analyze_file 或使用 r2_run_command 执行 'aaa'。",
+                "🚪 [会话管理] 打开二进制文件。默认执行基础分析 (a) 以快速识别函数。注意：对于大型文件 (>10MB)，强烈建议将 auto_analyze 设为 false 以免超时。如需深度分析，可后续调用 r2_analyze_file 或使用 r2_run_command 执行 'aa'。",
                 mapOf(
                     "file_path" to mapOf("type" to "string", "description" to "二进制文件的完整路径"),
                     "session_id" to mapOf("type" to "string", "description" to "可选:使用现有会话 ID,如果不提供则自动创建"),
@@ -1588,9 +1588,9 @@ object MCPServer {
         }
         
         val analysisResult = if (autoAnalyze) {
-            logInfo("执行基础分析 (aa)...")
+            logInfo("执行基础分析 (a)...")
             val startTime = System.currentTimeMillis()
-            val output = R2Core.executeCommand(session!!.corePtr, "aa")
+            val output = R2Core.executeCommand(session!!.corePtr, "a")
             val duration = System.currentTimeMillis() - startTime
             logInfo("分析完成，耗时 ${duration}ms")
             "\n[基础分析已完成，耗时 ${duration}ms]\n$output"
@@ -1641,9 +1641,9 @@ object MCPServer {
         }
         
         val analysisResult = if (autoAnalyze) {
-            logInfo("执行基础分析 (aa)...")
+            logInfo("执行基础分析 (a)...")
             val startTime = System.currentTimeMillis()
-            val output = R2Core.executeCommand(session!!.corePtr, "aa")
+            val output = R2Core.executeCommand(session!!.corePtr, "a")
             val duration = System.currentTimeMillis() - startTime
             logInfo("分析完成，耗时 ${duration}ms")
             "\n[基础分析已完成，耗时 ${duration}ms]\n$output"

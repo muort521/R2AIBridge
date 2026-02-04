@@ -559,7 +559,7 @@ fun MainScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     
                     val tools = listOf(
-                        "🚪 r2_open_file - 打开文件 (默认 aa 基础分析)",
+                        "🚪 r2_open_file - 打开文件 (默认 a 基础分析)",
                         "⚡ r2_analyze_file - 深度分析 (aaa, 耗时较长)",
                         "🎯 r2_analyze_target - 智能分析策略 (精准下刀)",
                         "⚙️ r2_run_command - 执行 R2 命令 (通用)",
