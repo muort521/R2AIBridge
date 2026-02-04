@@ -20,23 +20,77 @@ app/
 ├── src/main/
 │   ├── cpp/                      # JNI 原生代码
 │   │   ├── CMakeLists.txt        # CMake 构建配置
-│   │   ├── native-lib.cpp        # JNI 实现
-│   │   └── include/libr/         # Radare2 头文件
+│   │   └── native-lib.cpp        # JNI 实现
 │   ├── java/com/r2aibridge/
 │   │   ├── R2Core.kt             # JNI 接口
 │   │   ├── MainActivity.kt       # 主界面
+│   │   ├── ShellUtils.kt         # Shell 工具类
 │   │   ├── service/
 │   │   │   └── R2ServiceForeground.kt  # 前台服务
 │   │   ├── mcp/
 │   │   │   ├── MCPModels.kt      # MCP 数据模型
-│   │   │   └── MCPServer.kt      # MCP 服务器
+│   │   │   ├── MCPServer.kt      # MCP 服务器
+│   │   │   └── R2SessionManager.kt  # R2 会话管理
 │   │   ├── concurrency/
 │   │   │   └── R2ConcurrencyManager.kt # 并发管理
 │   │   └── ui/theme/
 │   │       └── Theme.kt          # Compose 主题
 │   ├── jniLibs/arm64-v8a/        # Radare2 共享库
+│   │   ├── libr_anal.so
+│   │   ├── libr_arch.so
+│   │   ├── libr_asm.so
+│   │   ├── libr_bin.so
+│   │   ├── libr_bp.so
+│   │   ├── libr_config.so
+│   │   ├── libr_cons.so
+│   │   ├── libr_core.so
+│   │   ├── libr_debug.so
+│   │   ├── libr_egg.so
+│   │   ├── libr_esil.so
+│   │   ├── libr_flag.so
+│   │   ├── libr_fs.so
+│   │   ├── libr_io.so
+│   │   ├── libr_lang.so
+│   │   ├── libr_magic.so
+│   │   ├── libr_main.so
+│   │   ├── libr_muta.so
+│   │   ├── libr_reg.so
+│   │   ├── libr_search.so
+│   │   ├── libr_socket.so
+│   │   ├── libr_syscall.so
+│   │   └── libr_util.so
+│   ├── res/
+│   │   ├── drawable/
+│   │   │   └── ic_launcher.png
+│   │   └── values/
+│   │       ├── strings.xml
+│   │       └── themes.xml
 │   └── AndroidManifest.xml
-└── build.gradle.kts
+├── build.gradle.kts
+└── proguard-rules.pro
+```
+
+### 根目录文件
+
+```
+.
+├── .github/workflows/            # GitHub Actions 工作流
+├── .vscode/                      # VS Code 配置
+├── app/                          # 主应用模块
+├── .gitignore                    # Git 忽略文件
+├── BUILD_STATUS.md               # 构建状态报告
+├── BUILD_SUCCESS_REPORT.md       # 构建成功报告
+├── DEPLOYMENT_CHECKLIST.md       # 部署检查清单
+├── DEPLOYMENT_GUIDE.md           # 部署指南
+├── DEVELOPER_GUIDE.md            # 开发者指南
+├── MCP_EXAMPLES.md               # MCP 示例
+├── PROJECT_SUMMARY.md            # 项目摘要
+├── QUICKSTART.md                 # 快速开始指南
+├── README.md                     # 项目说明
+├── gradle.properties             # Gradle 属性
+├── gradlew                       # Gradle 包装器 (Unix)
+├── gradlew.bat                   # Gradle 包装器 (Windows)
+└── local.properties.example      # 本地属性示例
 ```
 
 ## 技术栈
