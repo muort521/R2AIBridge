@@ -1,19 +1,26 @@
 name: Android Release Build
 
 on:
-  # 当推送以 'v' 开头的标签时触发 (例如 v1.0.0, v3.0)
+  # 1. 当推送以 'v' 开头的标签时自动触发 (例如 v1.0.0, v3.0)
   push:
     tags:
       - 'v*'
-  # 允许手动触发构建 (可以在指定的 Tag 上手动运行以触发覆盖更新)
+      
+  # 2. 允许手动触发，并带有一个输入框让您填写 Tag
   workflow_dispatch:
+    inputs:
+      custom_tag:
+        description: '手动指定 Tag 名称 (例如: v1.0.1)'
+        required: true
+        type: string
+        default: 'v1.0.1'
 
 jobs:
   build:
     name: Build & Release APK
     runs-on: ubuntu-latest
 
-    # ✅ 【关键修改】添加写权限，解决 Release Notes 生成失败及覆盖附件的问题
+    # ✅ 添加写权限，解决 Release 生成和覆盖附件的问题
     permissions:
       contents: write
 
@@ -41,13 +48,23 @@ jobs:
         # 包含 CMake 编译过程
         run: ./gradlew assembleRelease --stacktrace
 
-      - name: Rename APK
+      - name: Determine Tag and Rename APK
         id: rename_apk
         run: |
-          # ✅ 获取当前触发的 Tag 名称 (例如 v1.0.0)
-          TAG_NAME=${GITHUB_REF_NAME}
+          # ✅ 智能判断 Tag 来源
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # 如果是手动触发，使用输入的 Tag
+            TAG_NAME="${{ inputs.custom_tag }}"
+          else
+            # 如果是 git push tag 触发，使用原本的 Tag
+            TAG_NAME="${GITHUB_REF_NAME}"
+          fi
           
-          # 将编译出的 apk 重命名为固定格式，方便后续精准覆盖
+          echo "🏷️ 当前使用的 Tag 为: $TAG_NAME"
+          # 将 TAG_NAME 保存到环境变量，供后续步骤使用
+          echo "CURRENT_TAG=$TAG_NAME" >> $GITHUB_ENV
+          
+          # 规范化 APK 命名
           APK_NAME="R2AIBridge-${TAG_NAME}-release.apk"
           
           # 找到构建出的 apk 并重命名
@@ -56,10 +73,9 @@ jobs:
 
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
-        # 只在触发源是 Tag 时才执行发布 (包括手动在 Tag 分支上触发)
-        if: startsWith(github.ref, 'refs/tags/')
         with:
-          # ✅ softprops 插件会自动检测：如果 Tag 已存在，则进入更新模式；遇到同名文件会自动替换
+          # ✅ 显式指定 tag_name，如果 Tag 存在则覆盖/更新附件；如果不存在则自动创建
+          tag_name: ${{ env.CURRENT_TAG }}
           files: ${{ steps.rename_apk.outputs.apk_path }}
           generate_release_notes: true
           draft: false
@@ -71,5 +87,5 @@ jobs:
         # 备份构建产物到 Actions 页面
         uses: actions/upload-artifact@v4
         with:
-          name: r2aibridge-release-apk
+          name: R2AIBridge-${{ env.CURRENT_TAG }}-apk
           path: ${{ steps.rename_apk.outputs.apk_path }}
