@@ -1,0 +1,62 @@
+name: Update Radare2 Core Libraries
+
+# 触发条件：手动触发 (支持在 GitHub 网页端点击运行)
+on:
+  workflow_dispatch:
+
+# 必须赋予写入权限，以便 Actions 能够将新的 .so 文件提交并推送到仓库
+permissions:
+  contents: write
+
+jobs:
+  update-r2-libs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Latest Radare2 Android aarch64 Release
+        run: |
+          echo "🚀 获取 Radare2 最新版本信息..."
+          # 使用 GitHub API 获取最新 Release 中以 android-aarch64.tar.gz 结尾的下载链接
+          LATEST_URL=$(curl -s https://api.github.com/repos/radareorg/radare2/releases/latest | jq -r '.assets[] | select(.name | test("android-aarch64\\.tar\\.gz$")) | .browser_download_url')
+          
+          if [ -z "$LATEST_URL" ]; then
+            echo "❌ 未找到对应的 Android aarch64 下载包"
+            exit 1
+          fi
+          
+          echo "📥 下载链接: $LATEST_URL"
+          wget -qO radare2-latest.tar.gz "$LATEST_URL"
+
+      - name: Extract and Process .so Files
+        run: |
+          echo "🧹 准备解压和提取..."
+          TARGET_DIR="app/src/main/jniLibs/arm64-v8a"
+          mkdir -p temp_extract
+          mkdir -p "$TARGET_DIR"
+
+          # 解压文件
+          tar -xzf radare2-latest.tar.gz -C temp_extract
+
+          echo "🔍 正在提取并清洗核心库文件..."
+          # 寻找真实的大文件，剥离版本号，并复制到 jniLibs 目录
+          find temp_extract -type f -name "libr_*.so.*" | while read -r filepath; do
+              filename=$(basename "$filepath")
+              # 截断 .so 后面的版本号
+              clean_name=$(echo "$filename" | sed 's/\.so\..*/\.so/')
+              cp "$filepath" "$TARGET_DIR/$clean_name"
+              echo "  ✔️ 已更新: $clean_name"
+          done
+
+          # 清理临时文件，防止污染 Git 工作区
+          rm -rf temp_extract radare2-latest.tar.gz
+
+      - name: Commit and Push Changes
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "build: update radare2 android aarch64 core libraries to latest release"
+          file_pattern: "app/src/main/jniLibs/arm64-v8a/*.so"
+          commit_user_name: "github-actions[bot]"
+          commit_user_email: "github-actions[bot]@users.noreply.github.com"
