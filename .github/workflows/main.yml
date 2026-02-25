@@ -5,7 +5,7 @@ on:
   push:
     tags:
       - 'v*'
-  # 允许手动触发构建
+  # 允许手动触发构建 (可以在指定的 Tag 上手动运行以触发覆盖更新)
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
     name: Build & Release APK
     runs-on: ubuntu-latest
 
-    # ✅ 【关键修改】添加写权限，解决 Release Notes 生成失败的问题
+    # ✅ 【关键修改】添加写权限，解决 Release Notes 生成失败及覆盖附件的问题
     permissions:
       contents: write
 
@@ -44,14 +44,22 @@ jobs:
       - name: Rename APK
         id: rename_apk
         run: |
+          # ✅ 获取当前触发的 Tag 名称 (例如 v1.0.0)
+          TAG_NAME=${GITHUB_REF_NAME}
+          
+          # 将编译出的 apk 重命名为固定格式，方便后续精准覆盖
+          APK_NAME="R2AIBridge-${TAG_NAME}-release.apk"
+          
           # 找到构建出的 apk 并重命名
-          find . -name "*-release.apk" -exec mv {} r2aibridge-release.apk \;
-          echo "apk_path=r2aibridge-release.apk" >> $GITHUB_OUTPUT
+          find app/build/outputs/apk/release -name "*-release.apk" -exec mv {} $APK_NAME \;
+          echo "apk_path=$APK_NAME" >> $GITHUB_OUTPUT
 
-      - name: Create Release
+      - name: Create or Update Release
         uses: softprops/action-gh-release@v2
+        # 只在触发源是 Tag 时才执行发布 (包括手动在 Tag 分支上触发)
         if: startsWith(github.ref, 'refs/tags/')
         with:
+          # ✅ softprops 插件会自动检测：如果 Tag 已存在，则进入更新模式；遇到同名文件会自动替换
           files: ${{ steps.rename_apk.outputs.apk_path }}
           generate_release_notes: true
           draft: false
