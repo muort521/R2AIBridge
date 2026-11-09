@@ -22,8 +22,8 @@ android {
         applicationId = "com.r2aibridge"
         minSdk = 26
         targetSdk = 36
-        versionCode = 624
-        versionName = "6.2.4"
+        versionCode = 626
+        versionName = "6.2.6"
         
         ndkVersion = "25.2.9519653"
 
